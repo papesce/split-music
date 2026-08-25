@@ -1,0 +1,7 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-multipart==0.0.20
+librosa==1.0.0
+openai-whisper==20250625
+mutagen==1.47.0
+Pillow==12.3.0
