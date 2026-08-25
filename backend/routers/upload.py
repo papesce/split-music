@@ -65,6 +65,20 @@ async def upload_file(file: UploadFile = File(...)) -> UploadResponse:
     )
 
 
+@router.get("/{file_id}/art")
+def get_file_art(file_id: str):
+    from fastapi.responses import FileResponse
+    meta = store.files.get(file_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="file_id not found.")
+    art = meta.get("art_path", "")
+    if not art or not Path(art).exists():
+        raise HTTPException(status_code=404, detail="No art embedded in this file.")
+    suffix = Path(art).suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    return FileResponse(art, media_type=mime)
+
+
 def _read_basic_tags(mp3_path: Path, dest_dir: Path) -> tuple[str, str, str, Path | None]:
     """Return (title, artist, album, art_path|None) from existing ID3 tags."""
     try:

@@ -6,6 +6,7 @@ import { FileUpload } from '@/components/FileUpload'
 import { Waveform } from '@/components/Waveform'
 import { SegmentCard } from '@/components/SegmentCard'
 import { ExportPanel } from '@/components/ExportPanel'
+import { FileInfo } from '@/components/FileInfo'
 
 type Stage = 'upload' | 'split' | 'edit'
 
@@ -90,6 +91,9 @@ export default function App() {
         {/* Stage: split + edit */}
         {upload && stage !== 'upload' && (
           <>
+            {/* File metadata banner */}
+            <FileInfo upload={upload} />
+
             {/* Waveform + split controls */}
             <section className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
