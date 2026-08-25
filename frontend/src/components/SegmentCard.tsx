@@ -50,8 +50,9 @@ export function SegmentCard({ segmentId, index }: Props) {
   return (
     <div className="border border-zinc-200 rounded-xl overflow-hidden bg-white">
       {/* Header row */}
+      {/* ── Top row: art · title · chevron ── */}
       <div
-        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-zinc-50 transition-colors"
+        className="flex items-center gap-3 px-4 pt-3 pb-2 cursor-pointer hover:bg-zinc-50 transition-colors"
         onClick={() => setExpanded((v) => !v)}
       >
         {/* Art thumbnail */}
@@ -79,12 +80,21 @@ export function SegmentCard({ segmentId, index }: Props) {
           <p className="text-xs text-zinc-400">{seg.artist || '—'} · {duration}</p>
         </div>
 
-        {/* Preview player */}
+        {/* Expand chevron */}
+        <svg
+          className={`w-4 h-4 text-zinc-400 transition-transform shrink-0 ${expanded ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+
+      {/* ── Action row: player · YouTube · download ── */}
+      <div className="flex items-center gap-2 px-4 pb-3" onClick={(e) => e.stopPropagation()}>
         <audio
           src={segmentAudioUrl(segmentId)}
           controls
-          className="h-8 w-40 shrink-0"
-          onClick={(e) => e.stopPropagation()}
+          className="h-8 flex-1 min-w-0"
         />
 
         {/* Search on YouTube */}
@@ -93,7 +103,6 @@ export function SegmentCard({ segmentId, index }: Props) {
           target="_blank"
           rel="noopener noreferrer"
           title="Search on YouTube"
-          onClick={(e) => e.stopPropagation()}
           className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-red-600 hover:bg-red-50 transition-colors"
         >
           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -104,7 +113,7 @@ export function SegmentCard({ segmentId, index }: Props) {
         {/* Download single */}
         <button
           title="Download this track as MP3"
-          onClick={(e) => { e.stopPropagation(); exportSingle(seg) }}
+          onClick={() => exportSingle(seg)}
           className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -112,14 +121,6 @@ export function SegmentCard({ segmentId, index }: Props) {
               d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
         </button>
-
-        {/* Expand chevron */}
-        <svg
-          className={`w-4 h-4 text-zinc-400 transition-transform shrink-0 ${expanded ? 'rotate-180' : ''}`}
-          fill="none" stroke="currentColor" viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
       </div>
 
       {/* Expanded editor */}
