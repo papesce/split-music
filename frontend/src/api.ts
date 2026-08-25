@@ -61,6 +61,33 @@ export async function transcribeSegment(segmentId: string): Promise<string> {
   return data.lyrics
 }
 
+export async function exportSingle(seg: SegmentMeta): Promise<void> {
+  const resp = await api.post(
+    '/export/single',
+    {
+      segment_id: seg.segment_id,
+      title: seg.title,
+      artist: seg.artist,
+      album: seg.album,
+      track: seg.track,
+      year: seg.year,
+      genre: seg.genre,
+      lyrics: seg.lyrics,
+      art_path: '',
+    },
+    { responseType: 'blob' },
+  )
+  const filename =
+    resp.headers['content-disposition']?.match(/filename="(.+)"/)?.[1] ??
+    `${seg.title || seg.segment_id}.mp3`
+  const url = URL.createObjectURL(resp.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export function segmentAudioUrl(segmentId: string): string {
   return `/segment/${segmentId}/audio`
 }

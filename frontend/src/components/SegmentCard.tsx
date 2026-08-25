@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { SegmentMeta } from '@/types'
-import { getSegment, updateSegment, uploadArt, transcribeSegment, segmentAudioUrl, segmentArtUrl } from '@/api'
+import { getSegment, updateSegment, uploadArt, transcribeSegment, exportSingle, segmentAudioUrl, segmentArtUrl } from '@/api'
 
 interface Props {
   segmentId: string
@@ -86,6 +86,18 @@ export function SegmentCard({ segmentId, index }: Props) {
           className="h-8 w-40 shrink-0"
           onClick={(e) => e.stopPropagation()}
         />
+
+        {/* Download single */}
+        <button
+          title="Download this track as MP3"
+          onClick={(e) => { e.stopPropagation(); exportSingle(seg) }}
+          className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </button>
 
         {/* Expand chevron */}
         <svg

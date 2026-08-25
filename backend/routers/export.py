@@ -1,4 +1,6 @@
-"""POST /export — tag all segments and return a zip archive."""
+"""POST /export        — tag all segments and return a zip archive.
+   POST /export/single — tag one segment and return a single MP3.
+"""
 
 import io
 import shutil
@@ -6,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import store
@@ -77,6 +79,57 @@ def export_segments(req: ExportRequest) -> StreamingResponse:
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="export_{req.file_id[:8]}.zip"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /export/single
+# ---------------------------------------------------------------------------
+
+class SingleExportRequest(BaseModel):
+    segment_id: str
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    track: str = ""
+    year: str = ""
+    genre: str = ""
+    lyrics: str = ""
+    art_path: str = ""
+
+
+@router.post("/single")
+def export_single(req: SingleExportRequest) -> FileResponse:
+    seg = store.segments.get(req.segment_id)
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"segment_id '{req.segment_id}' not found.")
+
+    export_dir = store.file_dir(seg["file_id"]) / "export"
+    export_dir.mkdir(exist_ok=True)
+
+    filename = f"{seg['index']:03d}_{_safe(req.title or req.segment_id)}.mp3"
+    export_path = export_dir / filename
+    shutil.copy2(seg["path"], export_path)
+
+    art = req.art_path or seg["art_path"] or None
+
+    tag_mp3(
+        export_path,
+        title=req.title or seg["title"],
+        artist=req.artist or seg["artist"],
+        album=req.album or seg["album"],
+        track=req.track or seg["track"],
+        year=req.year or seg["year"],
+        genre=req.genre or seg["genre"],
+        lyrics=req.lyrics or seg["lyrics"],
+        art_path=art if art and Path(art).exists() else None,
+    )
+
+    return FileResponse(
+        str(export_path),
+        media_type="audio/mpeg",
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
