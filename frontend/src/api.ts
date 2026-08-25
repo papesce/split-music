@@ -1,12 +1,29 @@
 import axios from 'axios'
-import type { UploadResponse, DetectResponse, ApplyResponse, SegmentMeta } from '@/types'
+import type {
+  UploadResponse,
+  DetectResponse,
+  ApplyResponse,
+  SegmentInfo,
+  SegmentMeta,
+  IdentifyResult,
+} from '@/types'
 
 const api = axios.create({ baseURL: '/' })
 
-export async function uploadFile(file: File): Promise<UploadResponse> {
+export async function uploadFile(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
-  const { data } = await api.post<UploadResponse>('/upload', form)
+  const { data } = await api.post<UploadResponse>('/upload', form, {
+    onUploadProgress: onProgress
+      ? (e) => {
+          const total = e.total ?? file.size
+          onProgress(Math.round((e.loaded / total) * 100))
+        }
+      : undefined,
+  })
   return data
 }
 
@@ -34,6 +51,31 @@ export async function applySplit(
   return data
 }
 
+export async function applySliceOne(
+  fileId: string,
+  startMs: number,
+  endMs: number,
+): Promise<SegmentInfo> {
+  const { data } = await api.post<SegmentInfo>('/split/apply-one', {
+    file_id: fileId,
+    start_ms: startMs,
+    end_ms: endMs,
+  })
+  return data
+}
+
+export async function updateBoundaries(
+  segmentId: string,
+  startMs: number,
+  endMs: number,
+): Promise<SegmentMeta> {
+  const { data } = await api.patch<SegmentMeta>(`/segment/${segmentId}/boundaries`, {
+    start_ms: startMs,
+    end_ms: endMs,
+  })
+  return data
+}
+
 export async function getSegment(segmentId: string): Promise<SegmentMeta> {
   const { data } = await api.get<SegmentMeta>(`/segment/${segmentId}`)
   return data
@@ -51,6 +93,11 @@ export async function uploadArt(segmentId: string, file: File): Promise<void> {
   const form = new FormData()
   form.append('file', file)
   await api.post(`/segment/${segmentId}/art`, form)
+}
+
+export async function identifySegment(segmentId: string): Promise<IdentifyResult> {
+  const { data } = await api.post<IdentifyResult>(`/segment/${segmentId}/identify`)
+  return data
 }
 
 export async function transcribeSegment(segmentId: string): Promise<string> {
@@ -84,6 +131,33 @@ export async function exportSingle(seg: SegmentMeta): Promise<void> {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function exportAllZip(fileId: string, segments: SegmentMeta[]): Promise<void> {
+  const resp = await api.post(
+    '/export',
+    {
+      file_id: fileId,
+      segments: segments.map((s) => ({
+        segment_id: s.segment_id,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        track: s.track,
+        year: s.year,
+        genre: s.genre,
+        lyrics: s.lyrics,
+        art_path: '',
+      })),
+    },
+    { responseType: 'blob' },
+  )
+  const url = URL.createObjectURL(resp.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `export_${fileId.slice(0, 8)}.zip`
   a.click()
   URL.revokeObjectURL(url)
 }

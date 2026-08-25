@@ -42,3 +42,14 @@ export interface SegmentMeta {
   lyrics: string
   has_art: boolean
 }
+
+export interface IdentifyResult {
+  segment_id: string
+  title: string
+  artist: string
+  album: string
+  year: string
+  mbid: string
+  confidence: number
+  available: boolean
+}

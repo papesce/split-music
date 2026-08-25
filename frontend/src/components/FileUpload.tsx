@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react'
 import type { UploadResponse } from '@/types'
 import { uploadFile } from '@/api'
 
+const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg'])
+
 interface Props {
   onUploaded: (result: UploadResponse) => void
 }
@@ -9,22 +11,26 @@ interface Props {
 export function FileUpload({ onUploaded }: Props) {
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   const handleFile = useCallback(async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.mp3')) {
-      setError('Only MP3 files are supported.')
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+    if (!AUDIO_EXTS.has(ext)) {
+      setError('Unsupported format. Drop an MP3, M4A, WAV, FLAC, AAC or OGG file.')
       return
     }
     setError(null)
     setLoading(true)
+    setUploadPct(0)
     try {
-      const result = await uploadFile(file)
+      const result = await uploadFile(file, (pct) => setUploadPct(pct))
       onUploaded(result)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Upload failed.')
     } finally {
       setLoading(false)
+      setUploadPct(0)
     }
   }, [onUploaded])
 
@@ -55,15 +61,25 @@ export function FileUpload({ onUploaded }: Props) {
       >
         <input
           type="file"
-          accept=".mp3,audio/mpeg"
+          accept=".mp3,.m4a,.wav,.flac,.aac,.ogg,audio/*"
           className="hidden"
           onChange={onInputChange}
           disabled={loading}
         />
         {loading ? (
-          <div className="flex flex-col items-center gap-2 text-zinc-500">
+          <div className="flex flex-col items-center gap-3 w-full max-w-xs">
             <Spinner />
-            <span className="text-sm">Uploading…</span>
+            <span className="text-sm text-zinc-500">
+              {uploadPct < 100 ? `Uploading… ${uploadPct}%` : 'Processing…'}
+            </span>
+            {uploadPct > 0 && (
+              <div className="w-full bg-zinc-200 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-blue-500 h-full rounded-full transition-all duration-200"
+                  style={{ width: `${uploadPct}%` }}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex flex-col items-center gap-2 text-zinc-500">
@@ -71,14 +87,14 @@ export function FileUpload({ onUploaded }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                 d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
             </svg>
-            <span className="font-medium text-zinc-700">Drop an MP3 here</span>
-            <span className="text-sm">or click to browse</span>
+            <span className="font-medium text-zinc-700">Drop an audio file here</span>
+            <span className="text-sm">MP3, M4A, WAV, FLAC — or click to browse</span>
           </div>
         )}
       </label>
 
       {error && (
-        <p className="text-sm text-red-600">{error}</p>
+        <p className="text-sm text-red-600 text-center max-w-sm">{error}</p>
       )}
     </div>
   )

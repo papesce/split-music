@@ -73,9 +73,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
         raise HTTPException(status_code=400, detail="Need at least 2 split points (start + end).")
 
     # Remove stale segments for this file
-    stale = [sid for sid, s in store.segments.items() if s["file_id"] == req.file_id]
-    for sid in stale:
-        del store.segments[sid]
+    store.segments.delete_by_file(req.file_id)
 
     dest_dir = store.file_dir(req.file_id)
     result: list[SegmentInfo] = []
@@ -109,6 +107,61 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
         result.append(SegmentInfo(segment_id=segment_id, index=i, start_ms=start_ms, end_ms=end_ms))
 
     return ApplyResponse(file_id=req.file_id, segments=result)
+
+
+# ---------------------------------------------------------------------------
+# /split/apply-one
+# ---------------------------------------------------------------------------
+
+class ApplyOneRequest(BaseModel):
+    file_id: str
+    start_ms: int
+    end_ms: int
+
+
+@router.post("/apply-one", response_model=SegmentInfo)
+def apply_one(req: ApplyOneRequest) -> SegmentInfo:
+    meta = _require_file(req.file_id)
+
+    if req.end_ms <= req.start_ms:
+        raise HTTPException(status_code=400, detail="end_ms must be greater than start_ms.")
+
+    # Assign index based on how many segments for this file already exist
+    existing = store.segments.by_file(req.file_id)
+    index = len(existing)
+
+    segment_id = store.new_id()
+    out_path = store.file_dir(req.file_id) / f"segment_{segment_id[:8]}.mp3"
+
+    try:
+        slice_segment(meta["path"], req.start_ms, req.end_ms, out_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Slice failed: {exc}") from exc
+
+    seg: store.SegmentMeta = {
+        "segment_id": segment_id,
+        "file_id": req.file_id,
+        "index": index,
+        "start_ms": req.start_ms,
+        "end_ms": req.end_ms,
+        "path": str(out_path),
+        "title": "",
+        "artist": meta["artist"],
+        "album": meta["album"],
+        "track": str(index + 1),
+        "year": "",
+        "genre": "",
+        "lyrics": "",
+        "art_path": meta["art_path"],
+    }
+    store.segments[segment_id] = seg
+
+    return SegmentInfo(
+        segment_id=segment_id,
+        index=index,
+        start_ms=req.start_ms,
+        end_ms=req.end_ms,
+    )
 
 
 def _require_file(file_id: str) -> store.FileMeta:
