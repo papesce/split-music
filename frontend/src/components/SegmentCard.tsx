@@ -87,6 +87,20 @@ export function SegmentCard({ segmentId, index }: Props) {
           onClick={(e) => e.stopPropagation()}
         />
 
+        {/* Search on YouTube */}
+        <a
+          href={youtubeSearchUrl(seg)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Search on YouTube"
+          onClick={(e) => e.stopPropagation()}
+          className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M23.498 6.186a2.994 2.994 0 0 0-2.107-2.117C19.545 3.6 12 3.6 12 3.6s-7.545 0-9.391.469A2.994 2.994 0 0 0 .502 6.186 31.33 31.33 0 0 0 0 12a31.33 31.33 0 0 0 .502 5.814 2.994 2.994 0 0 0 2.107 2.117C4.455 20.4 12 20.4 12 20.4s7.545 0 9.391-.469a2.994 2.994 0 0 0 2.107-2.117A31.33 31.33 0 0 0 24 12a31.33 31.33 0 0 0-.502-5.814zM9.6 15.6V8.4l6.4 3.6-6.4 3.6z"/>
+          </svg>
+        </a>
+
         {/* Download single */}
         <button
           title="Download this track as MP3"
@@ -178,4 +192,10 @@ function msToTime(ms: number): string {
   const s = Math.floor(ms / 1000)
   const m = Math.floor(s / 60)
   return `${m}:${(s % 60).toString().padStart(2, '0')}`
+}
+
+function youtubeSearchUrl(seg: SegmentMeta): string {
+  const parts = [seg.artist, seg.title].filter(Boolean)
+  const query = parts.length ? parts.join(' ') : `Track ${seg.index + 1}`
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
 }
