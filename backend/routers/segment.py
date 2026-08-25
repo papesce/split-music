@@ -130,6 +130,22 @@ def get_art(segment_id: str) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
+# GET /segment/file/{file_id}/audio  — stream the original uploaded MP3
+# ---------------------------------------------------------------------------
+
+@router.get("/file/{file_id}/audio")
+def stream_original(file_id: str) -> FileResponse:
+    from store import files
+    meta = files.get(file_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    path = Path(meta["path"])
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found on disk.")
+    return FileResponse(str(path), media_type="audio/mpeg", filename=path.name)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
