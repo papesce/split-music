@@ -25,6 +25,7 @@ router = APIRouter(prefix="/segment", tags=["segment"])
 # Shared response model
 # ---------------------------------------------------------------------------
 
+
 class SegmentResponse(BaseModel):
     segment_id: str
     file_id: str
@@ -63,6 +64,7 @@ def _to_response(seg: store.SegmentMeta) -> SegmentResponse:
 # GET /segment/{segment_id}
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{segment_id}", response_model=SegmentResponse)
 def get_segment(segment_id: str) -> SegmentResponse:
     return _to_response(_require_segment(segment_id))
@@ -71,6 +73,7 @@ def get_segment(segment_id: str) -> SegmentResponse:
 # ---------------------------------------------------------------------------
 # PATCH /segment/{segment_id}  — update metadata fields
 # ---------------------------------------------------------------------------
+
 
 class SegmentUpdate(BaseModel):
     title: str | None = None
@@ -94,6 +97,7 @@ def update_segment(segment_id: str, update: SegmentUpdate) -> SegmentResponse:
 # ---------------------------------------------------------------------------
 # PATCH /segment/{segment_id}/boundaries  — re-slice with new start/end
 # ---------------------------------------------------------------------------
+
 
 class BoundariesUpdate(BaseModel):
     start_ms: int
@@ -130,6 +134,7 @@ def update_boundaries(segment_id: str, update: BoundariesUpdate) -> SegmentRespo
 # POST /segment/{segment_id}/identify  — AcoustID fingerprint lookup
 # ---------------------------------------------------------------------------
 
+
 class IdentifyResponse(BaseModel):
     segment_id: str
     title: str
@@ -138,7 +143,7 @@ class IdentifyResponse(BaseModel):
     year: str
     mbid: str
     confidence: float
-    available: bool   # False when fpcalc / API key are missing
+    available: bool  # False when fpcalc / API key are missing
 
 
 @router.post("/{segment_id}/identify", response_model=IdentifyResponse)
@@ -152,14 +157,19 @@ async def identify(segment_id: str, background_tasks: BackgroundTasks) -> Identi
     if result is None:
         return IdentifyResponse(
             segment_id=segment_id,
-            title="", artist="", album="", year="", mbid="",
-            confidence=0.0, available=False,
+            title="",
+            artist="",
+            album="",
+            year="",
+            mbid="",
+            confidence=0.0,
+            available=False,
         )
 
     # Auto-fill any empty fields in the store (don't overwrite user edits)
-    updates: dict = {}
+    updates: dict[str, str] = {}
     for field in ("title", "artist", "album", "year"):
-        if result.get(field) and not seg[field]:  # type: ignore[literal-required]
+        if result.get(field) and not seg[field]:
             updates[field] = result[field]
 
     if updates:
@@ -184,6 +194,7 @@ async def identify(segment_id: str, background_tasks: BackgroundTasks) -> Identi
 async def _fetch_mbid_art(segment_id: str, mbid: str, file_id: str) -> None:
     """Background task: download cover art from Cover Art Archive."""
     import httpx
+
     seg = store.segments.get(segment_id)
     if not seg or seg["art_path"]:
         return  # already has art
@@ -202,6 +213,7 @@ async def _fetch_mbid_art(segment_id: str, mbid: str, file_id: str) -> None:
 # ---------------------------------------------------------------------------
 # POST /segment/{segment_id}/art
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{segment_id}/art")
 async def upload_art(segment_id: str, file: UploadFile = File(...)) -> dict:
@@ -222,6 +234,7 @@ async def upload_art(segment_id: str, file: UploadFile = File(...)) -> dict:
 # GET /segment/{segment_id}/audio
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{segment_id}/audio")
 def stream_audio(segment_id: str) -> FileResponse:
     seg = _require_segment(segment_id)
@@ -234,6 +247,7 @@ def stream_audio(segment_id: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 # GET /segment/{segment_id}/art
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{segment_id}/art")
 def get_art(segment_id: str) -> FileResponse:
@@ -250,6 +264,7 @@ def get_art(segment_id: str) -> FileResponse:
 # GET /segment/file/{file_id}/audio  — stream the original uploaded MP3
 # ---------------------------------------------------------------------------
 
+
 @router.get("/file/{file_id}/audio")
 def stream_original(file_id: str) -> FileResponse:
     meta = store.files.get(file_id)
@@ -264,6 +279,7 @@ def stream_original(file_id: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_segment(segment_id: str) -> store.SegmentMeta:
     seg = store.segments.get(segment_id)

@@ -16,7 +16,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 _API_KEY = os.environ.get("ACOUSTID_API_KEY", "")
 
 
@@ -25,7 +24,9 @@ def _fpcalc(path: str | Path) -> tuple[int, str] | None:
     try:
         result = subprocess.run(
             ["fpcalc", "-json", str(path)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         if result.returncode != 0:
             return None
@@ -53,20 +54,23 @@ def identify_segment(path: str | Path) -> dict | None:
     duration, fingerprint = fp
 
     try:
-        import acoustid  # type: ignore
-        results = list(acoustid.lookup(
-            _API_KEY,
-            fingerprint,
-            duration,
-            meta="recordings releases",
-        ))
+        import acoustid
+
+        results = list(
+            acoustid.lookup(
+                _API_KEY,
+                fingerprint,
+                duration,
+                meta="recordings releases",
+            )
+        )
     except Exception:
         return None
 
     best_score = 0.0
     best: dict = {}
 
-    for score, recording_id, title, artist in results:
+    for score, _recording_id, title, artist in results:
         if score > best_score:
             best_score = score
             best = {
@@ -84,8 +88,11 @@ def identify_segment(path: str | Path) -> dict | None:
     # Try to enrich with release info (album + year) via MusicBrainz
     try:
         import acoustid
+
         raw = acoustid.lookup(
-            _API_KEY, fingerprint, duration,
+            _API_KEY,
+            fingerprint,
+            duration,
             meta="recordings releases",
             response_type=acoustid.RESPONSE_RAW,
         )

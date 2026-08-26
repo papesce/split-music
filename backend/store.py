@@ -7,6 +7,7 @@ as long as TEMP_DIR still exists on the same machine.
 import sqlite3
 import tempfile
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
@@ -16,6 +17,7 @@ from typing import TypedDict
 # ---------------------------------------------------------------------------
 
 _STATE_FILE = Path(tempfile.gettempdir()) / "split_music_dir.txt"
+
 
 def _get_temp_dir() -> Path:
     """Return a stable temp dir that persists across server restarts."""
@@ -27,6 +29,7 @@ def _get_temp_dir() -> Path:
     _STATE_FILE.write_text(str(d))
     return d
 
+
 TEMP_DIR = _get_temp_dir()
 DB_PATH = TEMP_DIR / "split_music.db"
 
@@ -35,13 +38,14 @@ DB_PATH = TEMP_DIR / "split_music.db"
 # TypedDicts (unchanged interface for the rest of the codebase)
 # ---------------------------------------------------------------------------
 
+
 class SegmentMeta(TypedDict):
     segment_id: str
     file_id: str
     index: int
     start_ms: int
     end_ms: int
-    path: str          # absolute path to the sliced MP3
+    path: str  # absolute path to the sliced MP3
     title: str
     artist: str
     album: str
@@ -49,24 +53,25 @@ class SegmentMeta(TypedDict):
     year: str
     genre: str
     lyrics: str
-    art_path: str      # absolute path to cover image (may be empty)
+    art_path: str  # absolute path to cover image (may be empty)
 
 
 class FileMeta(TypedDict):
     file_id: str
     original_name: str
-    path: str          # absolute path to the uploaded MP3
+    path: str  # absolute path to the uploaded MP3
     duration_ms: int
     title: str
     artist: str
     album: str
     art_path: str
-    split_points_ms: str   # JSON-encoded list of ints; "" when not yet set
+    split_points_ms: str  # JSON-encoded list of ints; "" when not yet set
 
 
 # ---------------------------------------------------------------------------
 # DB bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
@@ -75,7 +80,7 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _db():
+def _db() -> Generator[sqlite3.Connection, None, None]:
     conn = _connect()
     try:
         yield conn
@@ -102,9 +107,7 @@ def _init_db() -> None:
         # Migrate: add split_points_ms to existing DBs that predate this column
         cols = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
         if "split_points_ms" not in cols:
-            conn.execute(
-                "ALTER TABLE files ADD COLUMN split_points_ms TEXT NOT NULL DEFAULT ''"
-            )
+            conn.execute("ALTER TABLE files ADD COLUMN split_points_ms TEXT NOT NULL DEFAULT ''")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS segments (
                 segment_id  TEXT PRIMARY KEY,
@@ -125,6 +128,7 @@ def _init_db() -> None:
             );
         """)
 
+
 _init_db()
 
 
@@ -132,14 +136,13 @@ _init_db()
 # Dict-like proxies — drop-in replacement for the old plain dicts
 # ---------------------------------------------------------------------------
 
+
 class _FilesProxy:
     """Behaves like dict[str, FileMeta] but reads/writes SQLite."""
 
     def get(self, file_id: str) -> FileMeta | None:
         with _db() as conn:
-            row = conn.execute(
-                "SELECT * FROM files WHERE file_id = ?", (file_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
         return _row_to_file(row) if row else None
 
     def __getitem__(self, file_id: str) -> FileMeta:
@@ -150,7 +153,8 @@ class _FilesProxy:
 
     def __setitem__(self, file_id: str, meta: FileMeta) -> None:
         with _db() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO files (file_id, original_name, path, duration_ms,
                                    title, artist, album, art_path, split_points_ms)
                 VALUES (:file_id, :original_name, :path, :duration_ms,
@@ -164,13 +168,16 @@ class _FilesProxy:
                     album            = excluded.album,
                     art_path         = excluded.art_path,
                     split_points_ms  = excluded.split_points_ms
-            """, meta)
+            """,
+                meta,
+            )
 
     def __contains__(self, file_id: object) -> bool:
         return self.get(str(file_id)) is not None
 
     def save_split_points(self, file_id: str, points: list[int]) -> None:
         import json
+
         with _db() as conn:
             conn.execute(
                 "UPDATE files SET split_points_ms = ? WHERE file_id = ?",
@@ -181,7 +188,7 @@ class _FilesProxy:
         with _db() as conn:
             conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
 
-    def items(self):
+    def items(self) -> list[tuple[str, FileMeta]]:
         with _db() as conn:
             rows = conn.execute("SELECT * FROM files").fetchall()
         return [(_row_to_file(r)["file_id"], _row_to_file(r)) for r in rows]
@@ -205,7 +212,8 @@ class _SegmentsProxy:
 
     def __setitem__(self, segment_id: str, seg: SegmentMeta) -> None:
         with _db() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO segments
                     (segment_id, file_id, idx, start_ms, end_ms, path,
                      title, artist, album, track, year, genre, lyrics, art_path)
@@ -226,7 +234,9 @@ class _SegmentsProxy:
                     genre     = excluded.genre,
                     lyrics    = excluded.lyrics,
                     art_path  = excluded.art_path
-            """, seg)
+            """,
+                seg,
+            )
 
     def __delitem__(self, segment_id: str) -> None:
         with _db() as conn:
@@ -235,12 +245,12 @@ class _SegmentsProxy:
     def __contains__(self, segment_id: object) -> bool:
         return self.get(str(segment_id)) is not None
 
-    def items(self):
+    def items(self) -> list[tuple[str, SegmentMeta]]:
         with _db() as conn:
             rows = conn.execute("SELECT * FROM segments").fetchall()
         return [(r["segment_id"], _row_to_seg(r)) for r in rows]
 
-    def values(self):
+    def values(self) -> list[SegmentMeta]:
         with _db() as conn:
             rows = conn.execute("SELECT * FROM segments").fetchall()
         return [_row_to_seg(r) for r in rows]
@@ -256,7 +266,7 @@ class _SegmentsProxy:
         with _db() as conn:
             conn.execute("DELETE FROM segments WHERE file_id = ?", (file_id,))
 
-    def update_fields(self, segment_id: str, **kwargs) -> None:
+    def update_fields(self, segment_id: str, **kwargs: str | int) -> None:
         """Patch arbitrary fields in-place without a full round-trip."""
         if not kwargs:
             return

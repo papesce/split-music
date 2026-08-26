@@ -3,6 +3,7 @@ Audio utilities: duration, silence detection, slicing.
 Uses ffmpeg directly via subprocess — no pydub dependency.
 """
 
+import contextlib
 import json
 import subprocess
 from pathlib import Path
@@ -14,12 +15,18 @@ def _run(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 def get_duration_ms(path: str | Path) -> int:
     """Return duration in milliseconds using ffprobe."""
-    result = _run([
-        "ffprobe", "-v", "quiet",
-        "-print_format", "json",
-        "-show_entries", "format=duration:stream=duration",
-        str(path),
-    ])
+    result = _run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "format=duration:stream=duration",
+            str(path),
+        ]
+    )
     data = json.loads(result.stdout)
 
     durations_s: list[float] = []
@@ -52,11 +59,20 @@ def detect_split_points(
     noise_db = f"{silence_thresh_db}dB"
     min_duration = min_silence_ms / 1000.0
 
-    result = _run([
-        "ffmpeg", "-vn", "-i", str(path),
-        "-af", f"silencedetect=noise={noise_db}:duration={min_duration}",
-        "-f", "null", "-",
-    ], check=False)
+    result = _run(
+        [
+            "ffmpeg",
+            "-vn",
+            "-i",
+            str(path),
+            "-af",
+            f"silencedetect=noise={noise_db}:duration={min_duration}",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=False,
+    )
 
     # silencedetect writes to stderr
     output = result.stderr
@@ -65,18 +81,14 @@ def detect_split_points(
     ends: list[float] = []
     for line in output.splitlines():
         if "silence_start" in line:
-            try:
+            with contextlib.suppress(IndexError, ValueError):
                 starts.append(float(line.split("silence_start:")[1].strip()))
-            except (IndexError, ValueError):
-                pass
         elif "silence_end" in line:
-            try:
+            with contextlib.suppress(IndexError, ValueError):
                 ends.append(float(line.split("silence_end:")[1].split("|")[0].strip()))
-            except (IndexError, ValueError):
-                pass
 
     midpoints: list[int] = [0]
-    for s, e in zip(starts, ends):
+    for s, e in zip(starts, ends, strict=False):
         # A silence that starts at (or very close to) 0 is leading silence before
         # the first track.  Using its midpoint as an end boundary would create a
         # spurious near-silent segment at index 0.  Instead, use the silence_end
@@ -100,16 +112,25 @@ def slice_segment(
     start_s = start_ms / 1000.0
     duration_s = (end_ms - start_ms) / 1000.0
 
-    _run([
-        "ffmpeg", "-y",
-        "-i", str(source_path),
-        "-ss", str(start_s),
-        "-t", str(duration_s),
-        "-acodec", "libmp3lame",
-        "-b:a", "320k",
-        "-write_xing", "1",
-        str(out_path),
-    ])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source_path),
+            "-ss",
+            str(start_s),
+            "-t",
+            str(duration_s),
+            "-acodec",
+            "libmp3lame",
+            "-b:a",
+            "320k",
+            "-write_xing",
+            "1",
+            str(out_path),
+        ]
+    )
 
 
 def extract_cover_art(mp3_path: str | Path, out_path: str | Path) -> bool:
@@ -117,11 +138,17 @@ def extract_cover_art(mp3_path: str | Path, out_path: str | Path) -> bool:
     Extract embedded cover art from an MP3 using ffmpeg.
     Returns True if art was found and written, False otherwise.
     """
-    result = _run([
-        "ffmpeg", "-y",
-        "-i", str(mp3_path),
-        "-an",                   # no audio
-        "-vcodec", "copy",
-        str(out_path),
-    ], check=False)
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(mp3_path),
+            "-an",  # no audio
+            "-vcodec",
+            "copy",
+            str(out_path),
+        ],
+        check=False,
+    )
     return Path(out_path).exists() and Path(out_path).stat().st_size > 0

@@ -3,10 +3,11 @@
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import store
-from services.audio import get_duration_ms, extract_cover_art
+from services.audio import extract_cover_art, get_duration_ms
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -67,8 +68,7 @@ async def upload_file(file: UploadFile = File(...)) -> UploadResponse:
 
 
 @router.get("/{file_id}/art")
-def get_file_art(file_id: str):
-    from fastapi.responses import FileResponse
+def get_file_art(file_id: str) -> FileResponse:
     meta = store.files.get(file_id)
     if not meta:
         raise HTTPException(status_code=404, detail="file_id not found.")
@@ -84,6 +84,7 @@ def _read_basic_tags(mp3_path: Path, dest_dir: Path) -> tuple[str, str, str, Pat
     """Return (title, artist, album, art_path|None) from existing ID3 tags."""
     try:
         from mutagen.id3 import ID3
+
         tags = ID3(str(mp3_path))
         title = str(tags.get("TIT2", ""))
         artist = str(tags.get("TPE1", ""))

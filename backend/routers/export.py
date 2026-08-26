@@ -1,5 +1,5 @@
 """POST /export        — tag all segments and return a zip archive.
-   POST /export/single — tag one segment and return a single MP3.
+POST /export/single — tag one segment and return a single MP3.
 """
 
 import io
@@ -26,7 +26,7 @@ class SegmentExportMeta(BaseModel):
     year: str = ""
     genre: str = ""
     lyrics: str = ""
-    art_path: str = ""   # absolute path on server (already uploaded via /segment/{id}/art)
+    art_path: str = ""  # absolute path on server (already uploaded via /segment/{id}/art)
 
 
 class ExportRequest(BaseModel):
@@ -51,7 +51,9 @@ def export_segments(req: ExportRequest) -> StreamingResponse:
             )
 
         # Copy sliced MP3 to export dir so we don't modify the working copy
-        export_path = export_dir / f"{seg['index']:03d}_{_safe(seg_meta.title or seg_meta.segment_id)}.mp3"
+        export_path = (
+            export_dir / f"{seg['index']:03d}_{_safe(seg_meta.title or seg_meta.segment_id)}.mp3"
+        )
         shutil.copy2(seg["path"], export_path)
 
         art = seg_meta.art_path or seg["art_path"] or None
@@ -85,6 +87,7 @@ def export_segments(req: ExportRequest) -> StreamingResponse:
 # ---------------------------------------------------------------------------
 # POST /export/single
 # ---------------------------------------------------------------------------
+
 
 class SingleExportRequest(BaseModel):
     segment_id: str

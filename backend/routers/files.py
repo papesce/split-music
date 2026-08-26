@@ -18,6 +18,7 @@ router = APIRouter(prefix="/files", tags=["files"])
 # Response models
 # ---------------------------------------------------------------------------
 
+
 class FileEntry(BaseModel):
     file_id: str
     original_name: str
@@ -47,6 +48,7 @@ class FileStateResponse(BaseModel):
 # GET /files
 # ---------------------------------------------------------------------------
 
+
 @router.get("", response_model=list[FileEntry])
 def list_files() -> list[FileEntry]:
     """Return every uploaded file whose audio is still present on disk."""
@@ -54,21 +56,24 @@ def list_files() -> list[FileEntry]:
     for _, meta in store.files.items():
         if not Path(meta["path"]).exists():
             continue
-        result.append(FileEntry(
-            file_id=meta["file_id"],
-            original_name=meta["original_name"],
-            duration_ms=meta["duration_ms"],
-            title=meta["title"],
-            artist=meta["artist"],
-            album=meta["album"],
-            has_art=bool(meta["art_path"] and Path(meta["art_path"]).exists()),
-        ))
+        result.append(
+            FileEntry(
+                file_id=meta["file_id"],
+                original_name=meta["original_name"],
+                duration_ms=meta["duration_ms"],
+                title=meta["title"],
+                artist=meta["artist"],
+                album=meta["album"],
+                has_art=bool(meta["art_path"] and Path(meta["art_path"]).exists()),
+            )
+        )
     return result
 
 
 # ---------------------------------------------------------------------------
 # GET /files/{file_id}/state
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{file_id}/state", response_model=FileStateResponse)
 def get_file_state(file_id: str) -> FileStateResponse:
@@ -117,6 +122,7 @@ def get_file_state(file_id: str) -> FileStateResponse:
 # PUT /files/{file_id}/split-points
 # ---------------------------------------------------------------------------
 
+
 class SaveSplitPointsRequest(BaseModel):
     split_points_ms: list[int]
 
@@ -132,6 +138,7 @@ def save_split_points(file_id: str, req: SaveSplitPointsRequest) -> None:
 # ---------------------------------------------------------------------------
 # DELETE /files/{file_id}
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{file_id}", status_code=204)
 def delete_file(file_id: str) -> None:

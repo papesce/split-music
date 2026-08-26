@@ -3,6 +3,8 @@ POST /split/detect  — auto-detect silence-based split points
 POST /split/apply   — apply a list of timestamps to create segments
 """
 
+import itertools
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -15,6 +17,7 @@ router = APIRouter(prefix="/split", tags=["split"])
 # ---------------------------------------------------------------------------
 # /split/detect
 # ---------------------------------------------------------------------------
+
 
 class DetectRequest(BaseModel):
     file_id: str
@@ -47,9 +50,10 @@ def detect(req: DetectRequest) -> DetectResponse:
 # /split/apply
 # ---------------------------------------------------------------------------
 
+
 class ApplyRequest(BaseModel):
     file_id: str
-    split_points_ms: list[int]   # must include 0 and duration as boundaries
+    split_points_ms: list[int]  # must include 0 and duration as boundaries
 
 
 class SegmentInfo(BaseModel):
@@ -78,7 +82,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
     dest_dir = store.file_dir(req.file_id)
     result: list[SegmentInfo] = []
 
-    for i, (start_ms, end_ms) in enumerate(zip(points, points[1:])):
+    for i, (start_ms, end_ms) in enumerate(itertools.pairwise(points)):
         segment_id = store.new_id()
         out_path = dest_dir / f"segment_{i:03d}.mp3"
 
@@ -112,6 +116,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
 # ---------------------------------------------------------------------------
 # /split/apply-one
 # ---------------------------------------------------------------------------
+
 
 class ApplyOneRequest(BaseModel):
     file_id: str

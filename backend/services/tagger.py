@@ -5,14 +5,14 @@ from pathlib import Path
 from mutagen.id3 import (
     APIC,
     ID3,
-    ID3NoHeaderError,
     TALB,
+    TCON,
     TIT2,
     TPE1,
     TRCK,
     TYER,
-    TCON,
     USLT,
+    ID3NoHeaderError,
 )
 
 

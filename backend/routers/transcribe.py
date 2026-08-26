@@ -19,7 +19,9 @@ class TranscribeResponse(BaseModel):
 
 
 @router.post("/{segment_id}", response_model=TranscribeResponse)
-def transcribe_segment(segment_id: str, req: TranscribeRequest = TranscribeRequest()) -> TranscribeResponse:
+def transcribe_segment(
+    segment_id: str, req: TranscribeRequest = TranscribeRequest()
+) -> TranscribeResponse:
     seg = store.segments.get(segment_id)
     if not seg:
         raise HTTPException(status_code=404, detail=f"segment_id '{segment_id}' not found.")

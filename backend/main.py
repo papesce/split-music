@@ -1,10 +1,11 @@
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from routers import upload, split, transcribe, export, segment, files
+from routers import export, files, segment, split, transcribe, upload  # noqa: E402
 
 app = FastAPI(title="Split Music API", version="1.0.0")
 
