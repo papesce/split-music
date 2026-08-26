@@ -4,12 +4,15 @@ GET /files/{file_id}/state     — full session state: file metadata + split poi
 DELETE /files/{file_id}        — remove a file and all its segments from the store
 """
 
+import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import store
+from services.audio import slice_segment
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -218,6 +221,35 @@ def patch_draft(file_id: str, idx: int, req: DraftPatch) -> DraftState:
         track=d["track"], year=d["year"], genre=d["genre"],
         lyrics=d["lyrics"], has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /files/{file_id}/preview  — stream a sliced preview without persisting
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{file_id}/preview")
+def preview_audio(file_id: str, start_ms: int, end_ms: int, background_tasks: BackgroundTasks) -> FileResponse:
+    meta = store.files.get(file_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    if not Path(meta["path"]).exists():
+        raise HTTPException(status_code=404, detail="Audio file not found on disk.")
+    if end_ms <= start_ms:
+        raise HTTPException(status_code=400, detail="end_ms must be greater than start_ms.")
+    if start_ms < 0 or end_ms > meta["duration_ms"]:
+        raise HTTPException(status_code=400, detail="Slice out of bounds.")
+    # Slice to temp file
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        slice_segment(meta["path"], start_ms, end_ms, tmp_path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Preview slice failed: {exc}") from exc
+    background_tasks.add_task(lambda p=tmp_path: p.unlink(missing_ok=True))
+    return FileResponse(str(tmp_path), media_type="audio/mpeg", filename=f"preview_{start_ms}_{end_ms}.mp3")
 
 
 # ---------------------------------------------------------------------------

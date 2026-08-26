@@ -21,6 +21,8 @@ import { listDrafts } from '@/api'
 // TrackList
 // ---------------------------------------------------------------------------
 
+type DeleteMode = 'mergePrev' | 'mergeNext' | 'discard'
+
 interface TrackListProps {
   fileId: string
   splitPoints: number[] // includes 0 and total duration as boundaries
@@ -30,8 +32,9 @@ interface TrackListProps {
   onPlay: (index: number, startMs: number, endMs: number) => void
   onPause: () => void
   playingTrack: number | null
-  onDeleteTrack: (index: number) => void
+  onDeleteTrack: (index: number, mode: DeleteMode) => void
   onSplitComplete: (segments: SegmentMeta[]) => void
+  onFocusTrack?: (index: number) => void
 }
 
 export function TrackList({
@@ -44,6 +47,7 @@ export function TrackList({
   playingTrack,
   onDeleteTrack,
   onSplitComplete,
+  onFocusTrack,
 }: TrackListProps) {
   const qc = useQueryClient()
   const trackCount = splitPoints.length - 1
@@ -70,6 +74,7 @@ export function TrackList({
   const [splittingProgress, setSplittingProgress] = useState<[number, number]>([0, 0])
   const [identifyingAll, setIdentifyingAll] = useState(false)
   const [splitErrors, setSplitErrors] = useState<string[]>([])
+  const [collapseSignal, setCollapseSignal] = useState(0)
 
   // On resume: if we have a pre-populated splitMap, load their metadata and
   // notify the parent so the export footer is ready immediately.
@@ -96,6 +101,8 @@ export function TrackList({
 
   const toggleAll = () =>
     setSelected(allSelected ? new Set() : new Set(Array.from({ length: trackCount }, (_, i) => i)))
+
+  const handleCollapseAll = useCallback(() => setCollapseSignal((n) => n + 1), [])
 
   const collectSegments = useCallback(
     (map: Map<number, string>): Promise<SegmentMeta[]> =>
@@ -189,18 +196,33 @@ export function TrackList({
   )
 
   const handleDeleteTrackWrapper = useCallback(
-    (index: number) => {
-      // Prune splitMap for merge: discard index and index+1, shift later indices -1
+    (index: number, mode: DeleteMode) => {
       setSplitMap((prev) => {
         const m = new Map<number, string>()
-        for (const [k, v] of prev) {
-          if (k < index) m.set(k, v)
-          else if (k > index + 1) m.set(k - 1, v)
+        if (mode === 'discard') {
+          // Discard: remove only the discarded track, shift later indices -1
+          for (const [k, v] of prev) {
+            if (k < index) m.set(k, v)
+            else if (k > index) m.set(k - 1, v)
+          }
+        } else if (mode === 'mergePrev') {
+          // Merge with prev: splice boundary at index, so tracks index-1 and index merge
+          // In new indexing, merged track is at index-1; discard both old indices
+          for (const [k, v] of prev) {
+            if (k < index - 1) m.set(k, v)
+            else if (k > index) m.set(k - 1, v)
+          }
+        } else {
+          // mergeNext: discard index and index+1, shift later indices -1
+          for (const [k, v] of prev) {
+            if (k < index) m.set(k, v)
+            else if (k > index + 1) m.set(k - 1, v)
+          }
         }
         collectSegments(m).then(onSplitComplete).catch(() => {})
         return m
       })
-      onDeleteTrack(index)
+      onDeleteTrack(index, mode)
     },
     [onDeleteTrack, collectSegments, onSplitComplete],
   )
@@ -229,6 +251,7 @@ export function TrackList({
         pendingCount={pendingCount}
         splittingProgress={splittingProgress}
         onToggleAll={toggleAll}
+        onCollapseAll={handleCollapseAll}
         onIdentifyAll={handleIdentifyAll}
         onSplitAll={handleSplitAll}
       />
@@ -257,10 +280,13 @@ export function TrackList({
                 updated[i + 1] = newEnd
                 onSplitPointsChange(updated)
               }}
-              onDelete={() => handleDeleteTrackWrapper(i)}
+              onDelete={(mode) => handleDeleteTrackWrapper(i, mode)}
               onSplitTrack={() => handleSplitTrack(i)}
+              trackCount={splitPoints.length - 1}
               onPlay={() => onPlay(i, startMs, endMs)}
               onPause={onPause}
+              onFocus={() => onFocusTrack?.(i)}
+              collapseSignal={collapseSignal}
             />
           )
         })}
@@ -286,10 +312,13 @@ interface TrackRowProps {
   onToggleSelect: () => void
   onSplit: (segmentId: string) => void
   onBoundariesChange: (startMs: number, endMs: number) => void
-  onDelete: () => void
+  onDelete: (mode: DeleteMode) => void
   onSplitTrack: () => void
+  trackCount?: number
   onPlay: () => void
   onPause: () => void
+  onFocus?: () => void
+  collapseSignal?: number
 }
 
 function TrackRow({
@@ -309,12 +338,19 @@ function TrackRow({
   onSplitTrack,
   onPlay,
   onPause,
+  onFocus,
+  collapseSignal,
+  trackCount,
 }: TrackRowProps) {
   const qc = useQueryClient()
   const isSplit = segmentId !== null
 
   const [expanded, setExpanded] = useState(true)
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  useEffect(() => {
+    if (collapseSignal) setExpanded(false)
+  }, [collapseSignal])
 
   useEffect(() => {
     if (!confirmDelete) return
@@ -510,6 +546,19 @@ function TrackRow({
           </div>
         </div>
 
+        {/* Focus button */}
+        {onFocus && (
+          <button
+            onClick={onFocus}
+            title="Focus this track (zoom waveform, expand editor)"
+            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          </button>
+        )}
+
         {/* Play/Pause button */}
         <button
           onClick={isPlaying ? onPause : onPlay}
@@ -612,7 +661,7 @@ function TrackRow({
         {/* × Remove this track boundary */}
         <button
           onClick={() => setConfirmDelete(true)}
-          title="Remove this track (merges with next)"
+          title="Remove this track"
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -627,7 +676,13 @@ function TrackRow({
       </div>
 
       {/* Delete confirmation dialog */}
-      {confirmDelete && (
+      {confirmDelete && (() => {
+        const isFirst = index === 0
+        const isLast = trackCount !== undefined ? index === trackCount - 1 : false
+        const canMergePrev = !isFirst
+        const canMergeNext = !isLast
+        const canDiscard = trackCount === undefined || trackCount > 1
+        return (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
           onClick={() => setConfirmDelete(false)}
@@ -643,31 +698,60 @@ function TrackRow({
               id={`confirm-delete-title-${index}`}
               className="text-sm font-semibold text-zinc-800"
             >
-              Remove this track?
+              Remove track {index + 1}?
             </h3>
             <p className="mt-1.5 text-sm text-zinc-500">
-              Track {index + 1} will be removed and merged with the next track. This cannot be undone.
+              Choose what to do with this track's audio.
             </p>
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  setConfirmDelete(false)
+                  onDelete('mergePrev')
+                }}
+                disabled={!canMergePrev}
+                title={canMergePrev ? 'Merge this track into the previous one' : 'No previous track to merge with'}
+                className="w-full rounded-lg border border-zinc-200 px-3.5 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed text-left transition-colors"
+              >
+                Merge with previous
+                <span className="block text-xs font-normal text-zinc-400">Audio joins track {index}</span>
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false)
+                  onDelete('mergeNext')
+                }}
+                disabled={!canMergeNext}
+                title={canMergeNext ? 'Merge this track into the next one' : 'No next track to merge with'}
+                className="w-full rounded-lg border border-zinc-200 px-3.5 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed text-left transition-colors"
+              >
+                Merge with next
+                <span className="block text-xs font-normal text-zinc-400">Audio joins track {index + 2}</span>
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false)
+                  onDelete('discard')
+                }}
+                disabled={!canDiscard}
+                className="w-full rounded-lg bg-red-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-left transition-colors"
+              >
+                Discard
+                <span className="block text-xs font-normal text-red-200">Audio is removed, later tracks shift to close gap</span>
+              </button>
+            </div>
+            <div className="mt-3 flex justify-end">
               <button
                 onClick={() => setConfirmDelete(false)}
                 className="rounded-lg border border-zinc-200 px-3.5 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 transition-colors"
               >
                 Cancel
               </button>
-              <button
-                onClick={() => {
-                  setConfirmDelete(false)
-                  onDelete()
-                }}
-                className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-red-700 transition-colors"
-              >
-                Remove
-              </button>
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Audio player — only after split (hidden pre-split as requested) */}
       {isSplit && expanded && seg && (

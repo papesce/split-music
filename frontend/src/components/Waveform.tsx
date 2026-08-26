@@ -26,6 +26,8 @@ interface Props {
   /** Sensitivity controls */
   minSilenceMs?: number
   silenceThreshDb?: number
+  /** When set, waveform zooms to and shows only this track */
+  focusedIndex?: number | null | undefined
 }
 
 export function Waveform({
@@ -36,12 +38,14 @@ export function Waveform({
   onRegionClick,
   onAddSplit,
   ref,
+  focusedIndex,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
   const [playing, setPlaying] = useState(false)
   const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const stopAtRef = useRef<number | null>(null)
   const bandRegionIds = useRef<Set<string>>(new Set())
   // zoom level: pixels-per-second (1 = full file fits container)
@@ -55,12 +59,19 @@ export function Waveform({
     }
   }, [])
 
+  const pendingPlayRef = useRef<{ startMs: number; endMs?: number | undefined } | null>(null)
+
   const applyZoom = useCallback((pxPerSec: number) => {
     const ws = wsRef.current
     if (!ws) return
-    const clamped = Math.max(1, pxPerSec)
-    ws.zoom(clamped)
-    setZoom(clamped)
+    try {
+      const clamped = Math.max(1, pxPerSec)
+      ws.zoom(clamped)
+      setZoom(clamped)
+    } catch (err) {
+      // zoom before audio decoded throws "No audio loaded" in wavesurfer
+      console.warn('[Waveform] zoom ignored (not ready)', err)
+    }
   }, [])
 
   const computeZoomForWindow = useCallback((startMs: number, endMs: number): number => {
@@ -77,28 +88,52 @@ export function Waveform({
       playFrom(startMs: number, endMs?: number) {
         const ws = wsRef.current
         if (!ws) return
-        stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
-        ws.pause()
-        ws.seekTo(startMs / (durationMs || 1))
-        ws.play()
+        // If audio not yet decoded, queue play for when ready
+        if (!ready) {
+          pendingPlayRef.current = { startMs, endMs }
+          return
+        }
+        try {
+          stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
+          ws.pause()
+          ws.seekTo(startMs / (durationMs || 1))
+          const p = ws.play()
+          if (p && typeof (p as Promise<void>).catch === 'function') {
+            ;(p as Promise<void>).catch((err) => {
+              if (err instanceof Error && err.name === 'AbortError') return
+              console.error('[Waveform] play failed', err)
+            })
+          }
+        } catch (err) {
+          if (err instanceof Error && err.message.includes('No audio')) {
+            pendingPlayRef.current = { startMs, endMs }
+            return
+          }
+          console.error('[Waveform] playFrom error', err)
+        }
       },
       pause() {
         stopAtRef.current = null
-        wsRef.current?.pause()
+        pendingPlayRef.current = null
+        try { wsRef.current?.pause() } catch { /* ignore */ }
       },
       zoomTo(startMs: number, endMs: number) {
         const ws = wsRef.current
-        if (!ws) return
-        const pxPerSec = computeZoomForWindow(startMs, endMs)
-        applyZoom(pxPerSec)
-        // Scroll so the segment start is visible (WaveSurfer scrolls when we seekTo)
-        ws.seekTo(startMs / (durationMs || 1))
+        if (!ws || !ready) return
+        try {
+          const pxPerSec = computeZoomForWindow(startMs, endMs)
+          applyZoom(pxPerSec)
+          ws.seekTo(startMs / (durationMs || 1))
+        } catch (err) {
+          console.warn('[Waveform] zoomTo ignored', err)
+        }
       },
       resetZoom() {
+        if (!ready) return
         applyZoom(1)
       },
     }),
-    [durationMs, applyZoom, computeZoomForWindow],
+    [durationMs, applyZoom, computeZoomForWindow, ready],
   )
 
   // Initialise WaveSurfer once
@@ -117,12 +152,40 @@ export function Waveform({
       plugins: [regions],
     })
 
+    setError(null)
+    setReady(false)
     ws.load(audioUrl).catch((err: unknown) => {
       if (err instanceof Error && err.name === 'AbortError') return
-      throw err
+      console.error('[Waveform] load failed', audioUrl, err)
+      setError(err instanceof Error ? err.message : String(err))
     })
 
-    ws.on('ready', () => setReady(true))
+    ws.on('ready', () => {
+      setReady(true)
+      setError(null)
+      // Flush any play that was queued before audio was ready (focus -> play race)
+      if (pendingPlayRef.current) {
+        const { startMs, endMs } = pendingPlayRef.current
+        pendingPlayRef.current = null
+        try {
+          stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
+          ws.seekTo(startMs / ((ws.getDuration() * 1000) || 1))
+          const p = ws.play()
+          if (p && typeof (p as Promise<void>).catch === 'function') {
+            ;(p as Promise<void>).catch((err) => {
+              if (err instanceof Error && err.name === 'AbortError') return
+              console.error('[Waveform] deferred play failed', err)
+            })
+          }
+        } catch (err) {
+          console.error('[Waveform] deferred play error', err)
+        }
+      }
+    })
+    ws.on('error', (err: unknown) => {
+      console.error('[Waveform] error event', err)
+      setError(err instanceof Error ? err.message : String(err))
+    })
     ws.on('play', () => setPlaying(true))
     ws.on('pause', () => setPlaying(false))
     ws.on('finish', () => {
@@ -133,19 +196,31 @@ export function Waveform({
 
     // Plain click → seek + resume playback; Shift+click → insert split point
     ws.on('interaction', (newTimeSec: number) => {
+      // Disable Shift+click add while focused
+      const isFocused = (ws as unknown as { _focused?: boolean })._focused
       if ((ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked) {
         ;(ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = false
         return
       }
       const shiftHeld = (ws as unknown as { _shiftHeld?: boolean })._shiftHeld
-      if (shiftHeld) {
-        // Shift+click → add a split point
+      if (shiftHeld && !isFocused) {
+        // Shift+click → add a split point (disabled when focused)
         onAddSplit?.(Math.round(newTimeSec * 1000))
         return
       }
       // Plain click → seek and resume playback
       stopAtRef.current = null
-      ws.play()
+      try {
+        const p = ws.play()
+        if (p && typeof (p as Promise<void>).catch === 'function') {
+          ;(p as Promise<void>).catch((err) => {
+            if (err instanceof Error && err.name === 'AbortError') return
+            console.error('[Waveform] interaction play failed', err)
+          })
+        }
+      } catch (err) {
+        console.error('[Waveform] interaction play error', err)
+      }
     })
 
     // Track shift key state so the interaction handler can read it synchronously
@@ -167,6 +242,13 @@ export function Waveform({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl])
 
+  // Sync focused flag onto ws instance for interaction handler
+  useEffect(() => {
+    if (wsRef.current) {
+      ;(wsRef.current as unknown as { _focused?: boolean })._focused = focusedIndex !== null && focusedIndex !== undefined
+    }
+  }, [focusedIndex])
+
   // Re-register audioprocess when callback identity changes
   useEffect(() => {
     const ws = wsRef.current
@@ -174,6 +256,16 @@ export function Waveform({
     ws.un('audioprocess', onAudioProcess)
     ws.on('audioprocess', onAudioProcess)
   }, [onAudioProcess])
+
+  // When focused we load isolated audio — no auto-zoom to window needed.
+  // Just ensure zoom is reset for the isolated waveform.
+  useEffect(() => {
+    if (focusedIndex !== null && focusedIndex !== undefined) {
+      if (ready) applyZoom(1)
+    } else {
+      if (ready) applyZoom(1)
+    }
+  }, [focusedIndex, ready, applyZoom])
 
   // Draw / update split-point markers and band regions
   useEffect(() => {
@@ -183,6 +275,13 @@ export function Waveform({
 
     regions.clearRegions()
     bandRegionIds.current.clear()
+
+    const isFocused = focusedIndex !== null && focusedIndex !== undefined
+
+    if (isFocused) {
+      // Isolated audio — no bands/markers; the whole waveform is the track
+      return
+    }
 
     const colours: [string, string] = ['rgba(59,130,246,0.10)', 'rgba(16,185,129,0.10)']
     const boundaries = splitPoints.slice(1, -1) // interior markers only
@@ -222,9 +321,11 @@ export function Waveform({
         onSplitPointsChange(sorted(updated))
       })
     })
-  }, [splitPoints, durationMs, onSplitPointsChange, onRegionClick])
+  }, [splitPoints, durationMs, onSplitPointsChange, onRegionClick, focusedIndex])
 
-  const togglePlay = () => wsRef.current?.playPause()
+  const togglePlay = () => {
+    try { wsRef.current?.playPause() } catch (err) { console.error('[Waveform] togglePlay error', err) }
+  }
   const isZoomed = zoom > 1
 
   // Log-scale zoom: slider value 0–100 maps to pxPerSec 1–500 logarithmically
@@ -252,6 +353,7 @@ export function Waveform({
         className="w-full rounded-xl overflow-hidden bg-zinc-900 cursor-pointer"
         title="Click to seek · Shift+click to add a split · Drag red markers to adjust"
       />
+      {error && <div className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Waveform failed to load: {error}</div>}
 
       {/* Transport bar — grouped: [transport] | [zoom] [hint] */}
       <div className="flex items-center gap-1 flex-wrap">

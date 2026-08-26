@@ -10,6 +10,7 @@ interface Props {
   pendingCount: number
   splittingProgress: [number, number]
   onToggleAll: () => void
+  onCollapseAll: () => void
   onIdentifyAll: () => void
   onSplitAll: () => void
 }
@@ -26,6 +27,7 @@ export function TrackListHeader({
   pendingCount,
   splittingProgress,
   onToggleAll,
+  onCollapseAll,
   onIdentifyAll,
   onSplitAll,
 }: Props) {
@@ -44,6 +46,13 @@ export function TrackListHeader({
             : noneSelected
               ? 'Select all'
               : `${selectedCount}/${trackCount} selected`}
+        </button>
+        <span className="text-zinc-300 text-xs">·</span>
+        <button
+          onClick={onCollapseAll}
+          className="text-xs text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline transition-colors"
+        >
+          Collapse all
         </button>
       </div>
 

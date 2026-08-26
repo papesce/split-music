@@ -8,6 +8,10 @@ import { TrackList } from '@/components/TrackList'
 import { AppHeader, AppIcon } from '@/components/AppHeader'
 import { WaveformPanel } from '@/components/WaveformPanel'
 import { ExportFooter } from '@/components/ExportFooter'
+import { WaveformErrorBoundary } from '@/components/WaveformErrorBoundary'
+import { FocusedTrackView } from '@/components/FocusedTrackView'
+import { useQuery as useRQQuery } from '@tanstack/react-query'
+import { listDrafts, getSegment } from '@/api'
 
 type Stage = 'loading' | 'resume' | 'upload' | 'working'
 
@@ -38,6 +42,8 @@ export default function App() {
   // Segments produced by the bulk split — drives the export footer
   const [splitSegments, setSplitSegments] = useState<SegmentMeta[]>([])
   const [exporting, setExporting] = useState(false)
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
+  const [focusedSplitMap, setFocusedSplitMap] = useState<Map<number, string>>(new Map())
 
   // ── Fetch existing sessions on mount ──────────────────────────────────────
   const { data: existingFiles, isLoading: filesLoading } = useQuery({
@@ -122,6 +128,8 @@ export default function App() {
     setSplitPoints([])
     setSplitSegments([])
     setResumeSplitMap(new Map())
+    setFocusedIndex(null)
+    setFocusedSplitMap(new Map())
     qc.clear()
     // Re-fetch the file list so the resume screen is up to date
     qc.invalidateQueries({ queryKey: ['files'] })
@@ -168,10 +176,40 @@ export default function App() {
       ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [])
 
-  const handleDeleteTrack = useCallback((index: number) => {
+  type DeleteMode = 'mergePrev' | 'mergeNext' | 'discard'
+
+  const handleDeleteTrack = useCallback((index: number, mode: DeleteMode = 'mergeNext') => {
+    setFocusedIndex((prev) => {
+      if (prev === null) return prev
+      if (prev === index) return null
+      if (prev > index) return prev - 1
+      return prev
+    })
     setSplitPoints((prev) => {
       const next = [...prev]
-      next.splice(index + 1, 1)
+      if (mode === 'mergePrev') {
+        // Merge with previous: remove boundary at index (start of this track)
+        if (index === 0) return prev // cannot merge prev for first track
+        next.splice(index, 1)
+      } else if (mode === 'mergeNext') {
+        // Merge with next: remove boundary at index+1 (end of this track)
+        if (index >= prev.length - 2) return prev // cannot merge next for last track
+        next.splice(index + 1, 1)
+      } else {
+        // Discard: drop the track's interval and close the gap (shift later points)
+        if (prev.length <= 2) return prev // keep at least one track
+        const gap = (prev[index + 1] as number) - (prev[index] as number)
+        next.splice(index + 1, 1)
+        // close gap by shifting subsequent points left
+        for (let i = index + 1; i < next.length; i++) {
+          next[i] = (next[i] as number) - gap
+        }
+        // also remove the start boundary of the discarded track so neighbors become adjacent
+        // Actually after splicing index+1, the interval [prev[index], prev[index+1]) is gone;
+        // shifting makes next[index] (original prev[index]) stay, next[index+1] becomes original prev[index+2]-gap
+        // To fully discard we already removed prev[index+1]; gap closure is done.
+        // But we need to keep adjacency: no extra splice.
+      }
       if (upload) {
         const fileId = upload.file_id
         if (saveSplitPointsDebounce.current) clearTimeout(saveSplitPointsDebounce.current)
@@ -185,9 +223,39 @@ export default function App() {
     })
   }, [upload])
 
+  const handleExitFocus = useCallback(() => {
+    setFocusedIndex(null)
+    waveformRef.current?.resetZoom()
+  }, [])
+
+  // Keep focusedIndex valid when splitPoints change (e.g. Split in two inserts a point)
+  useEffect(() => {
+    if (focusedIndex !== null && focusedIndex >= splitPoints.length - 1) {
+      setFocusedIndex(null)
+    }
+  }, [splitPoints, focusedIndex])
+
+  // Fetch drafts for focused view (so we can show draft title)
+  const { data: focusedDrafts } = useRQQuery({
+    queryKey: ['drafts', upload?.file_id],
+    queryFn: () => listDrafts(upload!.file_id),
+    enabled: !!upload && focusedIndex !== null,
+  })
+  // Need splitMap for focused track to know segmentId
+  useEffect(() => {
+    if (!upload || focusedIndex === null) return
+    // Try to get from already known segments or query drafts? We'll build from resumeSplitMap + splitSegments
+    // For simplicity, keep a map synced from TrackList via onSplitComplete; also query single segment if needed
+  }, [upload, focusedIndex])
+
   // Global keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && focusedIndex !== null) {
+        e.preventDefault()
+        handleExitFocus()
+        return
+      }
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.code === 'Space') {
@@ -199,7 +267,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [focusedIndex, handleExitFocus])
 
   const handleExportAll = async () => {
     if (!upload || splitSegments.length === 0) return
@@ -300,6 +368,7 @@ export default function App() {
         className="fixed inset-x-0 z-30 bg-zinc-900 border-b border-zinc-700 shadow-lg"
         style={{ top: HEADER_H }}
       >
+        <WaveformErrorBoundary>
         <WaveformPanel
           fileId={upload!.file_id}
           durationMs={upload!.duration_ms}
@@ -315,10 +384,14 @@ export default function App() {
           onSilenceThreshChange={setSilenceThreshDb}
           onRedetect={() => detectMutation.mutate(upload!.file_id)}
           waveformRef={waveformRef}
+          focusedIndex={focusedIndex}
+          focusedSegmentId={focusedIndex !== null ? (focusedSplitMap.get(focusedIndex) ?? resumeSplitMap.get(focusedIndex) ?? null) : null}
+          onExitFocus={handleExitFocus}
         />
+        </WaveformErrorBoundary>
       </div>
 
-      {/* Scrollable track list */}
+      {/* Scrollable track list / focused view */}
       <main
         className="max-w-5xl mx-auto px-4 flex flex-col gap-4"
         style={{
@@ -327,7 +400,7 @@ export default function App() {
         }}
       >
         {detectMutation.isPending && <DetectSkeleton />}
-        {splittableCount >= 1 && !detectMutation.isPending && (
+        {splittableCount >= 1 && !detectMutation.isPending && focusedIndex === null && (
           <TrackList
             fileId={upload!.file_id}
             splitPoints={splitPoints}
@@ -344,7 +417,53 @@ export default function App() {
               waveformRef.current?.pause()
             }}
             onDeleteTrack={handleDeleteTrack}
-            onSplitComplete={handleSplitComplete}
+            onSplitComplete={(segs) => {
+              handleSplitComplete(segs)
+              // keep focused map in sync
+              const m = new Map(segs.map((s) => [s.index, s.segment_id]))
+              setFocusedSplitMap(m)
+            }}
+            onFocusTrack={(idx) => {
+              setFocusedIndex(idx)
+            }}
+          />
+        )}
+        {splittableCount >= 1 && !detectMutation.isPending && focusedIndex !== null && (
+          <FocusedTrackView
+            fileId={upload!.file_id}
+            index={focusedIndex}
+            startMs={splitPoints[focusedIndex] as number}
+            endMs={splitPoints[focusedIndex + 1] as number}
+            segmentId={focusedSplitMap.get(focusedIndex) ?? resumeSplitMap.get(focusedIndex) ?? null}
+            draft={focusedDrafts?.find((d) => d.idx === focusedIndex)}
+            isPlaying={playingTrack === focusedIndex}
+            onPlay={() => {
+              setPlayingTrack(focusedIndex)
+              // Isolated waveform: play from 0
+              waveformRef.current?.playFrom(0)
+            }}
+            onPause={() => {
+              setPlayingTrack(null)
+              waveformRef.current?.pause()
+            }}
+            onBoundariesChange={(s, e) => {
+              const updated = [...splitPoints]
+              updated[focusedIndex] = s
+              updated[focusedIndex + 1] = e
+              handleSplitPointsChange(updated)
+            }}
+            onExit={handleExitFocus}
+            onSplit={(sid) => {
+              setFocusedSplitMap((prev) => new Map(prev).set(focusedIndex, sid))
+              // also notify splitSegments
+              getSegment(sid).then((seg) => {
+                setSplitSegments((prev) => {
+                  const exists = prev.find((p) => p.segment_id === sid)
+                  if (exists) return prev
+                  return [...prev, seg]
+                })
+              })
+            }}
           />
         )}
       </main>

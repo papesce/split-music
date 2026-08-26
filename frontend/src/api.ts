@@ -135,6 +135,11 @@ export async function suggestFromLyrics(segmentId: string): Promise<SuggestPromp
   return data
 }
 
+export async function suggestFromText(lyrics: string): Promise<string> {
+  const { data } = await api.post<{ prompt: string }>(`/suggest/preview`, { lyrics })
+  return data.prompt
+}
+
 export async function fetchLyricsForSegment(
   segmentId: string,
   artist: string,
@@ -245,6 +250,10 @@ export async function exportAllZip(fileId: string, segments: SegmentMeta[]): Pro
 
 export function segmentAudioUrl(segmentId: string): string {
   return `/segment/${segmentId}/audio`
+}
+
+export function previewAudioUrl(fileId: string, startMs: number, endMs: number): string {
+  return `/files/${fileId}/preview?start_ms=${startMs}&end_ms=${endMs}`
 }
 
 export function segmentArtUrl(segmentId: string): string {

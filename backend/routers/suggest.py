@@ -14,6 +14,24 @@ class SuggestPromptResponse(BaseModel):
     prompt: str
 
 
+class PreviewSuggestRequest(BaseModel):
+    lyrics: str
+
+
+class PreviewSuggestResponse(BaseModel):
+    prompt: str
+
+
+@router.post("/preview", response_model=PreviewSuggestResponse)
+def suggest_preview(req: PreviewSuggestRequest) -> PreviewSuggestResponse:
+    if not req.lyrics.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="No lyrics provided. Transcribe first.",
+        )
+    return PreviewSuggestResponse(prompt=build_suggest_prompt(req.lyrics))
+
+
 @router.post("/{segment_id}", response_model=SuggestPromptResponse)
 def suggest_segment(segment_id: str) -> SuggestPromptResponse:
     seg = store.segments.get(segment_id)
