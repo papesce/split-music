@@ -111,7 +111,7 @@ export function TrackList({
       try {
         const startMs = splitPoints[i] as number
         const endMs = splitPoints[i + 1] as number
-        const info = await applySliceOne(fileId, startMs, endMs)
+        const info = await applySliceOne(fileId, i, startMs, endMs)
         nextMap.set(i, info.segment_id)
         setSplitMap(new Map(nextMap))
       } catch (err) {
@@ -326,7 +326,7 @@ function TrackRow({
   })
 
   const splitMutation = useMutation({
-    mutationFn: () => applySliceOne(fileId, startMs, endMs),
+    mutationFn: () => applySliceOne(fileId, index, startMs, endMs),
     onSuccess: (info) => onSplit(info.segment_id),
     onError: (err) => console.error(`[split] Track ${index + 1} (${startMs}–${endMs}ms) failed:`, err),
   })

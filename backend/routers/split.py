@@ -120,6 +120,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
 
 class ApplyOneRequest(BaseModel):
     file_id: str
+    index: int
     start_ms: int
     end_ms: int
 
@@ -131,9 +132,7 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
     if req.end_ms <= req.start_ms:
         raise HTTPException(status_code=400, detail="end_ms must be greater than start_ms.")
 
-    # Assign index based on how many segments for this file already exist
-    existing = store.segments.by_file(req.file_id)
-    index = len(existing)
+    index = req.index
 
     segment_id = store.new_id()
     out_path = store.file_dir(req.file_id) / f"segment_{segment_id[:8]}.mp3"

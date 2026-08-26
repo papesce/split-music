@@ -118,6 +118,7 @@ def slice_segment(
             "-y",
             "-i",
             str(source_path),
+            "-vn",
             "-ss",
             str(start_s),
             "-t",

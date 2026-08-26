@@ -74,11 +74,13 @@ export async function applySplit(fileId: string, splitPointsMs: number[]): Promi
 
 export async function applySliceOne(
   fileId: string,
+  index: number,
   startMs: number,
   endMs: number,
 ): Promise<SegmentInfo> {
   const { data } = await api.post<SegmentInfo>('/split/apply-one', {
     file_id: fileId,
+    index,
     start_ms: startMs,
     end_ms: endMs,
   })

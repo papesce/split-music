@@ -31,6 +31,5 @@ def transcribe_segment(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Persist transcription result back into store
-    seg["lyrics"] = text
+    store.segments.update_fields(segment_id, lyrics=text)
     return TranscribeResponse(segment_id=segment_id, lyrics=text)
