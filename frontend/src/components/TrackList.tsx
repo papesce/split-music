@@ -22,6 +22,8 @@ import { TrackMetadataEditor } from '@/components/TrackMetadataEditor'
 interface TrackListProps {
   fileId: string
   splitPoints: number[] // includes 0 and total duration as boundaries
+  /** Pre-populated index→segmentId map restored from a resumed session */
+  initialSplitMap?: Map<number, string>
   onSplitPointsChange: (points: number[]) => void
   onPlay: (index: number, startMs: number, endMs: number) => void
   onPause: () => void
@@ -33,6 +35,7 @@ interface TrackListProps {
 export function TrackList({
   fileId,
   splitPoints,
+  initialSplitMap,
   onSplitPointsChange,
   onPlay,
   onPause,
@@ -52,11 +55,22 @@ export function TrackList({
   }, [trackCount])
 
   // index → segmentId for rows that have already been sliced
-  const [splitMap, setSplitMap] = useState<Map<number, string>>(new Map())
+  const [splitMap, setSplitMap] = useState<Map<number, string>>(
+    () => initialSplitMap ?? new Map(),
+  )
   const [splitting, setSplitting] = useState(false)
   // tracks progress during bulk split — [currentIdx 1-based, total]
   const [splittingProgress, setSplittingProgress] = useState<[number, number]>([0, 0])
   const [identifyingAll, setIdentifyingAll] = useState(false)
+  const [splitErrors, setSplitErrors] = useState<string[]>([])
+
+  // On resume: if we have a pre-populated splitMap, load their metadata and
+  // notify the parent so the export footer is ready immediately.
+  useEffect(() => {
+    if (!initialSplitMap || initialSplitMap.size === 0) return
+    collectSegments(initialSplitMap).then(onSplitComplete).catch(() => {/* ignore */})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // intentionally run once on mount
 
   const selectedCount = selected.size
   const allSelected = selectedCount === trackCount
@@ -84,24 +98,31 @@ export function TrackList({
 
   const handleSplitAll = async () => {
     setSplitting(true)
+    setSplitErrors([])
     const nextMap = new Map(splitMap)
     const pending = Array.from({ length: trackCount }, (_, i) => i).filter(
       (i) => selected.has(i) && !nextMap.has(i),
     )
     setSplittingProgress([1, pending.length])
+    const errors: string[] = []
     for (let idx = 0; idx < pending.length; idx++) {
-      const i = pending[idx]
+      const i = pending[idx] as number
       setSplittingProgress([idx + 1, pending.length])
       try {
-        const info = await applySliceOne(fileId, splitPoints[i], splitPoints[i + 1])
+        const startMs = splitPoints[i] as number
+        const endMs = splitPoints[i + 1] as number
+        const info = await applySliceOne(fileId, startMs, endMs)
         nextMap.set(i, info.segment_id)
         setSplitMap(new Map(nextMap))
-      } catch {
-        // individual failure — continue
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[split] Track ${i + 1} failed:`, err)
+        errors.push(`Track ${i + 1}: ${msg}`)
       }
     }
     setSplitting(false)
     setSplittingProgress([0, 0])
+    if (errors.length > 0) setSplitErrors(errors)
     const segs = await collectSegments(nextMap)
     onSplitComplete(segs)
   }
@@ -112,7 +133,8 @@ export function TrackList({
       try {
         await identifySegment(sid)
         qc.invalidateQueries({ queryKey: ['segment', sid] })
-      } catch {
+      } catch (err) {
+        console.error(`[identify] Segment ${sid} failed:`, err)
         // continue on failure
       }
     }
@@ -132,6 +154,16 @@ export function TrackList({
 
   return (
     <section className="flex flex-col gap-3 pb-20">
+      {splitErrors.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <p className="font-semibold mb-1">Some tracks failed to split:</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            {splitErrors.map((e, i) => (
+              <li key={i}>{e}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <TrackListHeader
         trackCount={trackCount}
         selectedCount={selectedCount}
@@ -149,30 +181,33 @@ export function TrackList({
       />
 
       <div className="flex flex-col gap-3">
-        {splitPoints.slice(0, -1).map((startMs, i) => (
-          <TrackRow
-            key={`${fileId}-${i}`}
-            id={`track-row-${i}`}
-            fileId={fileId}
-            index={i}
-            startMs={startMs}
-            endMs={splitPoints[i + 1]}
-            selected={selected.has(i)}
-            segmentId={splitMap.get(i) ?? null}
-            isPlaying={playingTrack === i}
-            onToggleSelect={() => toggleIndex(i)}
-            onSplit={(sid) => handleRowSplit(i, sid)}
-            onBoundariesChange={(newStart, newEnd) => {
-              const updated = [...splitPoints]
-              updated[i] = newStart
-              updated[i + 1] = newEnd
-              onSplitPointsChange(updated)
-            }}
-            onDelete={() => onDeleteTrack(i)}
-            onPlay={() => onPlay(i, startMs, splitPoints[i + 1])}
-            onPause={onPause}
-          />
-        ))}
+        {splitPoints.slice(0, -1).map((startMs, i) => {
+          const endMs = splitPoints[i + 1] ?? startMs
+          return (
+            <TrackRow
+              key={`${fileId}-${i}`}
+              id={`track-row-${i}`}
+              fileId={fileId}
+              index={i}
+              startMs={startMs}
+              endMs={endMs}
+              selected={selected.has(i)}
+              segmentId={splitMap.get(i) ?? null}
+              isPlaying={playingTrack === i}
+              onToggleSelect={() => toggleIndex(i)}
+              onSplit={(sid) => handleRowSplit(i, sid)}
+              onBoundariesChange={(newStart, newEnd) => {
+                const updated = [...splitPoints]
+                updated[i] = newStart
+                updated[i + 1] = newEnd
+                onSplitPointsChange(updated)
+              }}
+              onDelete={() => onDeleteTrack(i)}
+              onPlay={() => onPlay(i, startMs, endMs)}
+              onPause={onPause}
+            />
+          )
+        })}
       </div>
     </section>
   )
@@ -222,7 +257,7 @@ function TrackRow({
 
   const { data: seg } = useQuery<SegmentMeta>({
     queryKey: ['segment', segmentId],
-    queryFn: () => getSegment(segmentId!),
+    queryFn: () => getSegment(segmentId as string),
     enabled: isSplit,
   })
 
@@ -253,8 +288,9 @@ function TrackRow({
   // Debounced boundary re-slice
   const boundaryDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const boundaryMutation = useMutation({
-    mutationFn: ({ s, e }: { s: number; e: number }) => updateBoundaries(segmentId!, s, e),
+    mutationFn: ({ s, e }: { s: number; e: number }) => updateBoundaries(segmentId as string, s, e),
     onSuccess: (updated) => qc.setQueryData(['segment', segmentId], updated),
+    onError: (err) => console.error(`[boundaries] Segment ${segmentId} re-slice failed:`, err),
   })
   const handleBoundaryChange = useCallback(
     (newStart: number, newEnd: number) => {
@@ -269,7 +305,8 @@ function TrackRow({
   )
 
   const identifyMutation = useMutation({
-    mutationFn: () => identifySegment(segmentId!),
+    mutationFn: () => identifySegment(segmentId as string),
+    onError: (err) => console.error(`[identify] Segment ${segmentId} failed:`, err),
     onSuccess: (result) => {
       if (!result.available) return
       const patch: Partial<SegmentMeta> = {}
@@ -291,6 +328,7 @@ function TrackRow({
   const splitMutation = useMutation({
     mutationFn: () => applySliceOne(fileId, startMs, endMs),
     onSuccess: (info) => onSplit(info.segment_id),
+    onError: (err) => console.error(`[split] Track ${index + 1} (${startMs}–${endMs}ms) failed:`, err),
   })
 
   const identifyResult = identifyMutation.data
@@ -344,7 +382,7 @@ function TrackRow({
         <div className="w-10 h-10 rounded bg-zinc-100 overflow-hidden shrink-0 flex items-center justify-center">
           {isSplit && seg?.has_art ? (
             <img
-              src={`${segmentArtUrl(segmentId!)}?t=${Date.now()}`}
+              src={segmentArtUrl(segmentId as string)}
               alt="cover"
               className="w-full h-full object-cover"
             />
@@ -505,10 +543,16 @@ function TrackRow({
         </button>
       </div>
 
-      {/* Audio player (only after splitting) */}
-      {isSplit && expanded && (
+      {/* Audio player (only after splitting and once segment metadata is loaded,
+          so the audio file is fully written before the browser tries to read it) */}
+      {isSplit && expanded && seg && (
         <div className="px-4 pb-2">
-          <audio src={segmentAudioUrl(segmentId!)} controls className="h-8 w-full" />
+          <audio
+            key={`${segmentId}-${seg.start_ms}-${seg.end_ms}`}
+            src={segmentAudioUrl(segmentId as string)}
+            controls
+            className="h-8 w-full"
+          />
         </div>
       )}
 

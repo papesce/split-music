@@ -61,6 +61,7 @@ class FileMeta(TypedDict):
     artist: str
     album: str
     art_path: str
+    split_points_ms: str   # JSON-encoded list of ints; "" when not yet set
 
 
 # ---------------------------------------------------------------------------
@@ -87,15 +88,24 @@ def _init_db() -> None:
     with _db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS files (
-                file_id      TEXT PRIMARY KEY,
-                original_name TEXT NOT NULL,
-                path         TEXT NOT NULL,
-                duration_ms  INTEGER NOT NULL,
-                title        TEXT NOT NULL DEFAULT '',
-                artist       TEXT NOT NULL DEFAULT '',
-                album        TEXT NOT NULL DEFAULT '',
-                art_path     TEXT NOT NULL DEFAULT ''
+                file_id          TEXT PRIMARY KEY,
+                original_name    TEXT NOT NULL,
+                path             TEXT NOT NULL,
+                duration_ms      INTEGER NOT NULL,
+                title            TEXT NOT NULL DEFAULT '',
+                artist           TEXT NOT NULL DEFAULT '',
+                album            TEXT NOT NULL DEFAULT '',
+                art_path         TEXT NOT NULL DEFAULT '',
+                split_points_ms  TEXT NOT NULL DEFAULT ''
             );
+        """)
+        # Migrate: add split_points_ms to existing DBs that predate this column
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
+        if "split_points_ms" not in cols:
+            conn.execute(
+                "ALTER TABLE files ADD COLUMN split_points_ms TEXT NOT NULL DEFAULT ''"
+            )
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS segments (
                 segment_id  TEXT PRIMARY KEY,
                 file_id     TEXT NOT NULL,
@@ -142,21 +152,34 @@ class _FilesProxy:
         with _db() as conn:
             conn.execute("""
                 INSERT INTO files (file_id, original_name, path, duration_ms,
-                                   title, artist, album, art_path)
+                                   title, artist, album, art_path, split_points_ms)
                 VALUES (:file_id, :original_name, :path, :duration_ms,
-                        :title, :artist, :album, :art_path)
+                        :title, :artist, :album, :art_path, :split_points_ms)
                 ON CONFLICT(file_id) DO UPDATE SET
-                    original_name = excluded.original_name,
-                    path          = excluded.path,
-                    duration_ms   = excluded.duration_ms,
-                    title         = excluded.title,
-                    artist        = excluded.artist,
-                    album         = excluded.album,
-                    art_path      = excluded.art_path
+                    original_name    = excluded.original_name,
+                    path             = excluded.path,
+                    duration_ms      = excluded.duration_ms,
+                    title            = excluded.title,
+                    artist           = excluded.artist,
+                    album            = excluded.album,
+                    art_path         = excluded.art_path,
+                    split_points_ms  = excluded.split_points_ms
             """, meta)
 
     def __contains__(self, file_id: object) -> bool:
         return self.get(str(file_id)) is not None
+
+    def save_split_points(self, file_id: str, points: list[int]) -> None:
+        import json
+        with _db() as conn:
+            conn.execute(
+                "UPDATE files SET split_points_ms = ? WHERE file_id = ?",
+                (json.dumps(points), file_id),
+            )
+
+    def delete(self, file_id: str) -> None:
+        with _db() as conn:
+            conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
 
     def items(self):
         with _db() as conn:
@@ -256,6 +279,7 @@ def _row_to_file(row: sqlite3.Row) -> FileMeta:
         artist=row["artist"],
         album=row["album"],
         art_path=row["art_path"],
+        split_points_ms=row["split_points_ms"] if row["split_points_ms"] else "",
     )
 
 

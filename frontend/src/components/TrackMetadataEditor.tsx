@@ -74,7 +74,7 @@ export function TrackMetadataEditor({
         </span>
         {seg?.has_art && (
           <img
-            src={`${segmentArtUrl(segmentId)}?t=${Date.now()}`}
+            src={segmentArtUrl(segmentId)}
             alt="cover"
             className="w-12 h-12 rounded object-cover border border-zinc-200"
           />

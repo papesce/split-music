@@ -77,7 +77,14 @@ def detect_split_points(
 
     midpoints: list[int] = [0]
     for s, e in zip(starts, ends):
-        midpoints.append(int((s + e) / 2 * 1000))
+        # A silence that starts at (or very close to) 0 is leading silence before
+        # the first track.  Using its midpoint as an end boundary would create a
+        # spurious near-silent segment at index 0.  Instead, use the silence_end
+        # as the effective start of audio so the first real track begins there.
+        if s < 0.1:
+            midpoints[0] = int(e * 1000)
+        else:
+            midpoints.append(int((s + e) / 2 * 1000))
     midpoints.append(duration_ms)
 
     return sorted(set(midpoints))
@@ -95,8 +102,8 @@ def slice_segment(
 
     _run([
         "ffmpeg", "-y",
-        "-ss", str(start_s),
         "-i", str(source_path),
+        "-ss", str(start_s),
         "-t", str(duration_s),
         "-acodec", "libmp3lame",
         "-b:a", "320k",

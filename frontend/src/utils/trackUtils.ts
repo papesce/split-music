@@ -20,11 +20,11 @@ export function parseTimeInput(s: string): number | null {
   const parts = trimmed.split(':').map(Number)
   if (parts.some(isNaN)) return null
   if (parts.length === 2) {
-    const [m, sec] = parts
+    const [m = 0, sec = 0] = parts
     return (m * 60 + sec) * 1000
   }
   if (parts.length === 3) {
-    const [h, m, sec] = parts
+    const [h = 0, m = 0, sec = 0] = parts
     return (h * 3600 + m * 60 + sec) * 1000
   }
   return null

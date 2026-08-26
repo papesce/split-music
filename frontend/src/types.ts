@@ -1,5 +1,25 @@
 // Shared types mirroring the backend Pydantic models
 
+export interface FileEntry {
+  file_id: string
+  original_name: string
+  duration_ms: number
+  title: string
+  artist: string
+  album: string
+  has_art: boolean
+}
+
+export interface SessionSegmentRef {
+  index: number
+  segment_id: string
+}
+
+export interface FileStateResponse extends FileEntry {
+  split_points_ms: number[]
+  segments: SessionSegmentRef[]
+}
+
 export interface UploadResponse {
   file_id: string
   original_name: string

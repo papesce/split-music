@@ -11,13 +11,15 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5893,
     proxy: {
-      '/upload': 'http://127.0.0.1:8000',
-      '/split': 'http://127.0.0.1:8000',
-      '/segment': 'http://127.0.0.1:8000',
-      '/export': 'http://127.0.0.1:8000',
-      '/transcribe': 'http://127.0.0.1:8000',
-      '/health': 'http://127.0.0.1:8000',
+      '/upload': 'http://127.0.0.1:8087',
+      '/split': 'http://127.0.0.1:8087',
+      '/segment': 'http://127.0.0.1:8087',
+      '/export': 'http://127.0.0.1:8087',
+      '/transcribe': 'http://127.0.0.1:8087',
+      '/health': 'http://127.0.0.1:8087',
+      '/files': 'http://127.0.0.1:8087',
     },
   },
 })

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { UploadResponse, SegmentMeta } from '@/types'
-import { detectSplitPoints, exportAllZip } from '@/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { UploadResponse, SegmentMeta, FileEntry } from '@/types'
+import { detectSplitPoints, exportAllZip, listFiles, getFileState, deleteFile, saveSplitPoints } from '@/api'
 import { FileUpload } from '@/components/FileUpload'
 import { type WaveformHandle } from '@/components/Waveform'
 import { TrackList } from '@/components/TrackList'
@@ -9,17 +9,20 @@ import { AppHeader, AppIcon } from '@/components/AppHeader'
 import { WaveformPanel } from '@/components/WaveformPanel'
 import { ExportFooter } from '@/components/ExportFooter'
 
-type Stage = 'upload' | 'working'
+type Stage = 'loading' | 'resume' | 'upload' | 'working'
 
 // Header height in px — matches py-4 + text line height
 const HEADER_H = 65
 
 export default function App() {
   const qc = useQueryClient()
-  const [stage, setStage] = useState<Stage>('upload')
+  const [stage, setStage] = useState<Stage>('loading')
   const [upload, setUpload] = useState<UploadResponse | null>(null)
   const [splitPoints, setSplitPoints] = useState<number[]>([])
+  const [resumeSplitMap, setResumeSplitMap] = useState<Map<number, string>>(new Map())
   const waveformRef = useRef<WaveformHandle>(null)
+  // Debounce ref for auto-saving split points
+  const saveSplitPointsDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Dynamic waveform panel height — measured via ResizeObserver
   const waveformPanelRef = useRef<HTMLDivElement>(null)
@@ -36,6 +39,24 @@ export default function App() {
   const [splitSegments, setSplitSegments] = useState<SegmentMeta[]>([])
   const [exporting, setExporting] = useState(false)
 
+  // ── Fetch existing sessions on mount ──────────────────────────────────────
+  const { data: existingFiles, isLoading: filesLoading } = useQuery({
+    queryKey: ['files'],
+    queryFn: listFiles,
+    // Only run once on mount; no background refetching needed
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  })
+
+  useEffect(() => {
+    if (filesLoading) return
+    if (existingFiles && existingFiles.length > 0) {
+      setStage('resume')
+    } else {
+      setStage('upload')
+    }
+  }, [existingFiles, filesLoading])
+
   // Measure the waveform panel height to correctly offset the scrollable list
   useEffect(() => {
     const el = waveformPanelRef.current
@@ -47,7 +68,13 @@ export default function App() {
 
   const detectMutation = useMutation({
     mutationFn: (fileId: string) => detectSplitPoints(fileId, minSilenceMs, silenceThreshDb),
-    onSuccess: (result) => setSplitPoints(result.split_points_ms),
+    onSuccess: (result) => {
+      setSplitPoints(result.split_points_ms)
+      saveSplitPoints(result.file_id, result.split_points_ms).catch((err) =>
+        console.error('[save-split-points] Failed after detect:', err),
+      )
+    },
+    onError: (err) => console.error('[detect] Split-point detection failed:', err),
   })
 
   const handleUploaded = (result: UploadResponse) => {
@@ -56,24 +83,84 @@ export default function App() {
     detectMutation.mutate(result.file_id)
   }
 
+  /** Resume a previously uploaded file. Restores split points from saved segments. */
+  const handleResume = async (entry: FileEntry) => {
+    try {
+      const state = await getFileState(entry.file_id)
+      const uploadLike: UploadResponse = {
+        file_id: state.file_id,
+        original_name: state.original_name,
+        duration_ms: state.duration_ms,
+        title: state.title,
+        artist: state.artist,
+        album: state.album,
+        has_art: state.has_art,
+      }
+      // Rebuild splitMap from already-sliced segments
+      const restoredMap = new Map(state.segments.map((s) => [s.index, s.segment_id]))
+      setUpload(uploadLike)
+      setSplitPoints(state.split_points_ms)
+      setResumeSplitMap(restoredMap)
+      setStage('working')
+    } catch (err) {
+      console.error('[resume] Failed to load session state:', err)
+    }
+  }
+
+  /** Delete a saved session from the server then update the list. */
+  const handleDeleteSession = async (fileId: string) => {
+    await deleteFile(fileId)
+    qc.invalidateQueries({ queryKey: ['files'] })
+    // If the list is now empty, go to upload
+    const remaining = (existingFiles ?? []).filter((f) => f.file_id !== fileId)
+    if (remaining.length === 0) setStage('upload')
+  }
+
   const handleReset = () => {
-    setStage('upload')
+    setStage(existingFiles && existingFiles.length > 0 ? 'resume' : 'upload')
     setUpload(null)
     setSplitPoints([])
     setSplitSegments([])
+    setResumeSplitMap(new Map())
     qc.clear()
+    // Re-fetch the file list so the resume screen is up to date
+    qc.invalidateQueries({ queryKey: ['files'] })
   }
 
   const handleSplitComplete = useCallback((segments: SegmentMeta[]) => {
     setSplitSegments(segments)
   }, [])
 
+  const handleSplitPointsChange = useCallback(
+    (points: number[]) => {
+      setSplitPoints(points)
+      if (!upload) return
+      const fileId = upload.file_id
+      if (saveSplitPointsDebounce.current) clearTimeout(saveSplitPointsDebounce.current)
+      saveSplitPointsDebounce.current = setTimeout(() => {
+        saveSplitPoints(fileId, points).catch((err) =>
+          console.error('[save-split-points] Failed:', err),
+        )
+      }, 500)
+    },
+    [upload],
+  )
+
   const handleAddSplit = useCallback((positionMs: number) => {
     setSplitPoints((prev) => {
       if (prev.includes(positionMs)) return prev
-      return [...prev, positionMs].sort((a, b) => a - b)
+      const next = [...prev, positionMs].sort((a, b) => a - b)
+      if (!upload) return next
+      const fileId = upload.file_id
+      if (saveSplitPointsDebounce.current) clearTimeout(saveSplitPointsDebounce.current)
+      saveSplitPointsDebounce.current = setTimeout(() => {
+        saveSplitPoints(fileId, next).catch((err) =>
+          console.error('[save-split-points] Failed:', err),
+        )
+      }, 500)
+      return next
     })
-  }, [])
+  }, [upload])
 
   const handleRegionClick = useCallback((index: number) => {
     document
@@ -85,9 +172,18 @@ export default function App() {
     setSplitPoints((prev) => {
       const next = [...prev]
       next.splice(index + 1, 1)
+      if (upload) {
+        const fileId = upload.file_id
+        if (saveSplitPointsDebounce.current) clearTimeout(saveSplitPointsDebounce.current)
+        saveSplitPointsDebounce.current = setTimeout(() => {
+          saveSplitPoints(fileId, next).catch((err) =>
+            console.error('[save-split-points] Failed after delete:', err),
+          )
+        }, 500)
+      }
       return next
     })
-  }, [])
+  }, [upload])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -116,6 +212,51 @@ export default function App() {
   }
 
   const splittableCount = splitPoints.length > 1 ? splitPoints.length - 1 : 0
+
+  // ─── Loading ──────────────────────────────────────────────────────────────
+  if (stage === 'loading') {
+    return (
+      <div className="min-h-screen bg-zinc-50 text-zinc-900 flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-zinc-300 border-t-zinc-700 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  // ─── Resume stage ─────────────────────────────────────────────────────────
+  if (stage === 'resume') {
+    return (
+      <div className="min-h-screen bg-zinc-50 text-zinc-900">
+        <header className="border-b border-zinc-200 bg-white px-6 py-4 flex items-center gap-2">
+          <AppIcon />
+          <h1 className="text-lg font-semibold">Split Music</h1>
+        </header>
+        <div className="max-w-xl mx-auto px-4 py-10 flex flex-col gap-6">
+          <div>
+            <h2 className="text-base font-semibold text-zinc-800 mb-1">Resume a session</h2>
+            <p className="text-sm text-zinc-500">
+              Pick up where you left off, or start fresh with a new file.
+            </p>
+          </div>
+          <ul className="flex flex-col gap-2">
+            {(existingFiles ?? []).map((entry) => (
+              <SessionRow
+                key={entry.file_id}
+                entry={entry}
+                onResume={() => handleResume(entry)}
+                onDelete={() => handleDeleteSession(entry.file_id)}
+              />
+            ))}
+          </ul>
+          <button
+            onClick={() => setStage('upload')}
+            className="self-start text-sm font-medium text-zinc-600 hover:text-zinc-900 underline underline-offset-2 transition-colors"
+          >
+            Upload a new file instead
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   // ─── Upload stage ─────────────────────────────────────────────────────────
   if (stage === 'upload') {
@@ -190,7 +331,8 @@ export default function App() {
           <TrackList
             fileId={upload!.file_id}
             splitPoints={splitPoints}
-            onSplitPointsChange={setSplitPoints}
+            initialSplitMap={resumeSplitMap}
+            onSplitPointsChange={handleSplitPointsChange}
             playingTrack={playingTrack}
             onPlay={(index, startMs, endMs) => {
               setPlayingTrack(index)
@@ -210,6 +352,64 @@ export default function App() {
       {/* Sticky export footer */}
       <ExportFooter segments={splitSegments} exporting={exporting} onExport={handleExportAll} />
     </div>
+  )
+}
+
+// ─── SessionRow ───────────────────────────────────────────────────────────────
+
+function SessionRow({
+  entry,
+  onResume,
+  onDelete,
+}: {
+  entry: FileEntry
+  onResume: () => void
+  onDelete: () => void
+}) {
+  const mins = Math.floor(entry.duration_ms / 60000)
+  const secs = Math.floor((entry.duration_ms % 60000) / 1000).toString().padStart(2, '0')
+  const label = entry.title || entry.original_name
+
+  return (
+    <li className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3">
+      {/* Thumbnail / icon */}
+      {entry.has_art ? (
+        <img
+          src={`/upload/${entry.file_id}/art`}
+          alt=""
+          className="w-10 h-10 rounded object-cover shrink-0"
+        />
+      ) : (
+        <div className="w-10 h-10 rounded bg-zinc-100 shrink-0 flex items-center justify-center text-zinc-400">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+          </svg>
+        </div>
+      )}
+
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-zinc-800 truncate">{label}</p>
+        <p className="text-xs text-zinc-400">
+          {entry.artist || 'Unknown artist'} · {mins}:{secs}
+        </p>
+      </div>
+
+      {/* Actions */}
+      <button
+        onClick={onResume}
+        className="text-xs font-medium px-3 py-1.5 rounded-lg bg-zinc-900 text-white hover:bg-zinc-700 transition-colors shrink-0"
+      >
+        Resume
+      </button>
+      <button
+        onClick={onDelete}
+        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-zinc-200 text-zinc-500 hover:border-red-300 hover:text-red-500 transition-colors shrink-0"
+        title="Remove session"
+      >
+        Delete
+      </button>
+    </li>
   )
 }
 

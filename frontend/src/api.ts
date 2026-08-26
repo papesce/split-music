@@ -6,9 +6,29 @@ import type {
   SegmentInfo,
   SegmentMeta,
   IdentifyResult,
+  FileEntry,
+  FileStateResponse,
 } from '@/types'
 
 const api = axios.create({ baseURL: '/' })
+
+export async function listFiles(): Promise<FileEntry[]> {
+  const { data } = await api.get<FileEntry[]>('/files')
+  return data
+}
+
+export async function getFileState(fileId: string): Promise<FileStateResponse> {
+  const { data } = await api.get<FileStateResponse>(`/files/${fileId}/state`)
+  return data
+}
+
+export async function saveSplitPoints(fileId: string, splitPointsMs: number[]): Promise<void> {
+  await api.put(`/files/${fileId}/split-points`, { split_points_ms: splitPointsMs })
+}
+
+export async function deleteFile(fileId: string): Promise<void> {
+  await api.delete(`/files/${fileId}`)
+}
 
 export async function uploadFile(
   file: File,
@@ -16,14 +36,18 @@ export async function uploadFile(
 ): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
-  const { data } = await api.post<UploadResponse>('/upload', form, {
-    onUploadProgress: onProgress
-      ? (e) => {
-          const total = e.total ?? file.size
-          onProgress(Math.round((e.loaded / total) * 100))
+  const { data } = await api.post<UploadResponse>(
+    '/upload',
+    form,
+    onProgress
+      ? {
+          onUploadProgress: (e) => {
+            const total = e.total ?? file.size
+            onProgress(Math.round((e.loaded / total) * 100))
+          },
         }
-      : undefined,
-  })
+      : {},
+  )
   return data
 }
 

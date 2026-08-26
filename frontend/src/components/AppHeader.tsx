@@ -38,7 +38,7 @@ export function AppHeader({ upload, onArtClick, onReset }: Props) {
             onClick={onReset}
             className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-zinc-200 hover:bg-zinc-100 transition-colors"
           >
-            New file
+            Switch session
           </button>
         </div>
       )}

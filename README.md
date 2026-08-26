@@ -6,6 +6,19 @@ A local web app to split long MP3 compilations (e.g. YouTube mixes) into individ
 
 ---
 
+## Quick Start
+
+```bash
+./dev.sh all       # open backend (tab 2) + frontend (tab 3) in new Terminal tabs
+./dev.sh backend   # backend only  →  http://127.0.0.1:8000
+./dev.sh ui        # frontend only →  http://localhost:5173
+./dev.sh help      # show all options
+```
+
+> Dependencies are installed automatically on first run (`backend/.venv`, `frontend/node_modules`).
+
+---
+
 ## Features
 
 - **Upload & preview** — drag-and-drop MP3 with waveform display

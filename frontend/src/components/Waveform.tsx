@@ -184,7 +184,7 @@ export function Waveform({
     regions.clearRegions()
     bandRegionIds.current.clear()
 
-    const colours = ['rgba(59,130,246,0.10)', 'rgba(16,185,129,0.10)']
+    const colours: [string, string] = ['rgba(59,130,246,0.10)', 'rgba(16,185,129,0.10)']
     const boundaries = splitPoints.slice(1, -1) // interior markers only
 
     // Coloured band regions — clickable to preview
@@ -194,7 +194,7 @@ export function Waveform({
       const r = regions.addRegion({
         start: pt / 1000,
         end: next / 1000,
-        color: colours[i % 2],
+        color: colours[i % 2 as 0 | 1],
         drag: false,
         resize: false,
       })

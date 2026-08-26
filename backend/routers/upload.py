@@ -51,6 +51,7 @@ async def upload_file(file: UploadFile = File(...)) -> UploadResponse:
         "artist": artist,
         "album": album,
         "art_path": str(art_path) if art_path else "",
+        "split_points_ms": "",
     }
     store.files[file_id] = meta
 
