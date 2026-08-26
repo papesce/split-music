@@ -14,6 +14,8 @@ import { msDuration } from '@/utils/trackUtils'
 import { TimeInput } from '@/components/TimeInput'
 import { TrackListHeader } from '@/components/TrackListHeader'
 import { TrackMetadataEditor } from '@/components/TrackMetadataEditor'
+import { DraftMetadataEditor } from '@/components/DraftMetadataEditor'
+import { listDrafts } from '@/api'
 
 // ---------------------------------------------------------------------------
 // TrackList
@@ -45,6 +47,11 @@ export function TrackList({
 }: TrackListProps) {
   const qc = useQueryClient()
   const trackCount = splitPoints.length - 1
+
+  const { data: drafts } = useQuery({
+    queryKey: ['drafts', fileId],
+    queryFn: () => listDrafts(fileId),
+  })
 
   // All indices selected by default; reset when splitPoints array length changes
   const [selected, setSelected] = useState<Set<number>>(
@@ -148,8 +155,54 @@ export function TrackList({
         collectSegments(next).then(onSplitComplete)
         return next
       })
+      qc.invalidateQueries({ queryKey: ['drafts', fileId] })
+      qc.invalidateQueries({ queryKey: ['draft', fileId, index] })
     },
-    [collectSegments, onSplitComplete],
+    [collectSegments, onSplitComplete, qc, fileId],
+  )
+
+  const handleSplitTrack = useCallback(
+    (index: number) => {
+      const start = splitPoints[index]
+      const end = splitPoints[index + 1]
+      if (start === undefined || end === undefined) return
+      if (end - start < 1000) return // too short to split meaningfully
+      const mid = Math.floor((start + end) / 2)
+      if (mid <= start || mid >= end) return
+      const next = [...splitPoints]
+      next.splice(index + 1, 0, mid)
+      next.sort((a, b) => a - b)
+      // Prune / shift splitMap: keep tracks before index, discard the split one,
+      // shift indices > index by +1 (their intervals are unchanged, just re-indexed)
+      setSplitMap((prev) => {
+        const m = new Map<number, string>()
+        for (const [k, v] of prev) {
+          if (k < index) m.set(k, v)
+          else if (k > index) m.set(k + 1, v)
+        }
+        collectSegments(m).then(onSplitComplete).catch(() => {})
+        return m
+      })
+      onSplitPointsChange(next)
+    },
+    [splitPoints, onSplitPointsChange, collectSegments, onSplitComplete],
+  )
+
+  const handleDeleteTrackWrapper = useCallback(
+    (index: number) => {
+      // Prune splitMap for merge: discard index and index+1, shift later indices -1
+      setSplitMap((prev) => {
+        const m = new Map<number, string>()
+        for (const [k, v] of prev) {
+          if (k < index) m.set(k, v)
+          else if (k > index + 1) m.set(k - 1, v)
+        }
+        collectSegments(m).then(onSplitComplete).catch(() => {})
+        return m
+      })
+      onDeleteTrack(index)
+    },
+    [onDeleteTrack, collectSegments, onSplitComplete],
   )
 
   return (
@@ -183,6 +236,7 @@ export function TrackList({
       <div className="flex flex-col gap-3">
         {splitPoints.slice(0, -1).map((startMs, i) => {
           const endMs = splitPoints[i + 1] ?? startMs
+          const draft = drafts?.find((d) => d.idx === i)
           return (
             <TrackRow
               key={`${fileId}-${i}`}
@@ -193,6 +247,7 @@ export function TrackList({
               endMs={endMs}
               selected={selected.has(i)}
               segmentId={splitMap.get(i) ?? null}
+              draft={draft}
               isPlaying={playingTrack === i}
               onToggleSelect={() => toggleIndex(i)}
               onSplit={(sid) => handleRowSplit(i, sid)}
@@ -202,7 +257,8 @@ export function TrackList({
                 updated[i + 1] = newEnd
                 onSplitPointsChange(updated)
               }}
-              onDelete={() => onDeleteTrack(i)}
+              onDelete={() => handleDeleteTrackWrapper(i)}
+              onSplitTrack={() => handleSplitTrack(i)}
               onPlay={() => onPlay(i, startMs, endMs)}
               onPause={onPause}
             />
@@ -225,11 +281,13 @@ interface TrackRowProps {
   endMs: number
   selected: boolean
   segmentId: string | null
+  draft?: import('@/types').DraftState | undefined
   isPlaying: boolean
   onToggleSelect: () => void
   onSplit: (segmentId: string) => void
   onBoundariesChange: (startMs: number, endMs: number) => void
   onDelete: () => void
+  onSplitTrack: () => void
   onPlay: () => void
   onPause: () => void
 }
@@ -242,11 +300,13 @@ function TrackRow({
   endMs,
   selected,
   segmentId,
+  draft,
   isPlaying,
   onToggleSelect,
   onSplit,
   onBoundariesChange,
   onDelete,
+  onSplitTrack,
   onPlay,
   onPause,
 }: TrackRowProps) {
@@ -254,6 +314,16 @@ function TrackRow({
   const isSplit = segmentId !== null
 
   const [expanded, setExpanded] = useState(true)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  useEffect(() => {
+    if (!confirmDelete) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setConfirmDelete(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [confirmDelete])
 
   const { data: seg } = useQuery<SegmentMeta>({
     queryKey: ['segment', segmentId],
@@ -282,7 +352,6 @@ function TrackRow({
       genre: seg.genre,
     })
     setLyrics(seg.lyrics)
-    if (seg.title && seg.artist) setExpanded(false)
   }, [seg])
 
   // Debounced boundary re-slice
@@ -335,6 +404,7 @@ function TrackRow({
   const confidence = identifyResult?.confidence ?? 0
   const identified = identifyResult?.available && confidence > 0.6
   const isDone = isSplit && !!fields.title && !!fields.artist
+  const draftHasData = !isSplit && !!draft && (!!draft.title || !!draft.lyrics)
 
   return (
     <div
@@ -397,8 +467,11 @@ function TrackRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <p className="font-medium text-sm text-zinc-800 truncate">
-              {isSplit && fields.title ? fields.title : `Track ${index + 1}`}
+              {isSplit ? (fields.title || `Track ${index + 1}`) : (draft?.title || `Track ${index + 1}`)}
             </p>
+            {!isSplit && draftHasData && !expanded && (
+              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">draft</span>
+            )}
             {isDone && !expanded && fields.artist && (
               <span className="text-xs text-zinc-400 truncate hidden sm:inline">
                 {fields.artist}
@@ -503,32 +576,42 @@ function TrackRow({
           </button>
         )}
 
-        {/* Chevron expand/collapse (only when done) */}
-        {isDone && (
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            title={expanded ? 'Collapse' : 'Expand'}
-            className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+        {/* Chevron expand/collapse — always available to unify pre/post split editor */}
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? 'Collapse' : 'Expand'}
+          className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+        >
+          <svg
+            className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
           >
-            <svg
-              className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 9l-7 7-7-7"
-              />
-            </svg>
-          </button>
-        )}
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M19 9l-7 7-7-7"
+            />
+          </svg>
+        </button>
+
+        {/* ✂ Split this track in two */}
+        <button
+          onClick={onSplitTrack}
+          disabled={endMs - startMs < 1000}
+          title={endMs - startMs < 1000 ? 'Track too short to split' : 'Split this track in two at midpoint (drag marker or edit times to adjust)'}
+          className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:opacity-30 transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zM9.879 9.879L4 4m5.879 5.879a3 3 0 104.243-4.243 3 3 0 00-4.243 4.243z" />
+          </svg>
+        </button>
 
         {/* × Remove this track boundary */}
         <button
-          onClick={onDelete}
+          onClick={() => setConfirmDelete(true)}
           title="Remove this track (merges with next)"
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors"
         >
@@ -543,8 +626,50 @@ function TrackRow({
         </button>
       </div>
 
-      {/* Audio player (only after splitting and once segment metadata is loaded,
-          so the audio file is fully written before the browser tries to read it) */}
+      {/* Delete confirmation dialog */}
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => setConfirmDelete(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`confirm-delete-title-${index}`}
+          >
+            <h3
+              id={`confirm-delete-title-${index}`}
+              className="text-sm font-semibold text-zinc-800"
+            >
+              Remove this track?
+            </h3>
+            <p className="mt-1.5 text-sm text-zinc-500">
+              Track {index + 1} will be removed and merged with the next track. This cannot be undone.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="rounded-lg border border-zinc-200 px-3.5 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false)
+                  onDelete()
+                }}
+                className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-red-700 transition-colors"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audio player — only after split (hidden pre-split as requested) */}
       {isSplit && expanded && seg && (
         <div className="px-4 pb-2">
           <audio
@@ -556,16 +681,22 @@ function TrackRow({
         </div>
       )}
 
-      {/* Inline metadata editor (only after splitting, collapsible) */}
-      {isSplit && expanded && segmentId && (
-        <TrackMetadataEditor
-          segmentId={segmentId}
-          seg={seg}
-          fields={fields}
-          lyrics={lyrics}
-          onFieldsChange={setFields}
-          onLyricsChange={setLyrics}
-        />
+      {/* Inline metadata editor — unified for pre-split (draft) and post-split (segment). */}
+      {expanded && (
+        <>
+          {isSplit && segmentId ? (
+            <TrackMetadataEditor
+              segmentId={segmentId}
+              seg={seg}
+              fields={fields}
+              lyrics={lyrics}
+              onFieldsChange={setFields}
+              onLyricsChange={setLyrics}
+            />
+          ) : (
+            <DraftMetadataEditor fileId={fileId} idx={index} draft={draft} startMs={startMs} endMs={endMs} />
+          )}
+        </>
       )}
     </div>
   )

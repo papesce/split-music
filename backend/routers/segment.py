@@ -4,19 +4,82 @@ GET   /segment/{segment_id}             — return segment metadata
 PATCH /segment/{segment_id}             — update metadata fields
 PATCH /segment/{segment_id}/boundaries  — update start/end ms and re-slice
 POST  /segment/{segment_id}/art         — upload cover art image for a segment
+POST  /segment/{segment_id}/art-url     — fetch cover art from a URL (server-side, avoids CORS)
 POST  /segment/{segment_id}/identify    — fingerprint and auto-fill metadata via AcoustID
 """
 
 import asyncio
+import io
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from PIL import Image
 from pydantic import BaseModel
 
 import store
 from services.audio import slice_segment
 from services.identify import identify_segment
+
+# Maximum dimension and JPEG quality for MP3 embedded art.
+# 800px is a good balance: crisp on modern players, keeps APIC < 300KB.
+_MAX_ART_SIZE = 800
+_JPEG_QUALITY = 85
+
+
+def _normalize_image(raw: bytes) -> bytes:
+    """Convert any image (PNG, WEBP, GIF, BMP, JPEG, etc.) to a
+    JPEG suitable for MP3 APIC: RGB, max 800px, optimized, quality 85.
+
+    Raises HTTPException 400 if the bytes are not a valid image.
+    """
+    try:
+        img = Image.open(io.BytesIO(raw))
+        # Handle animated images — take first frame
+        try:
+            img.seek(0)
+        except Exception:
+            pass
+
+        # Convert palette / transparency to RGB on white background
+        if img.mode in ("RGBA", "LA"):
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            # Use alpha channel as mask if present
+            alpha = img.split()[-1]
+            bg.paste(img.convert("RGB"), mask=alpha)
+            img = bg
+        elif img.mode == "P":
+            # Palette with possible transparency
+            if "transparency" in img.info:
+                img = img.convert("RGBA")
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img.convert("RGB"), mask=img.split()[-1])
+                img = bg
+            else:
+                img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize if larger than max, preserving aspect ratio
+        if max(img.size) > _MAX_ART_SIZE:
+            img.thumbnail((_MAX_ART_SIZE, _MAX_ART_SIZE), Image.LANCZOS)
+
+        # Handle EXIF orientation
+        try:
+            from PIL.ImageOps import exif_transpose
+
+            img = exif_transpose(img) or img
+        except Exception:
+            pass
+
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=_JPEG_QUALITY, optimize=True, progressive=True)
+        return out.getvalue()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}") from exc
 
 router = APIRouter(prefix="/segment", tags=["segment"])
 
@@ -203,8 +266,9 @@ async def _fetch_mbid_art(segment_id: str, mbid: str, file_id: str) -> None:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             resp = await client.get(url)
             if resp.status_code == 200:
+                data = _normalize_image(resp.content)
                 art_path = store.file_dir(file_id) / f"art_{segment_id}.jpg"
-                art_path.write_bytes(resp.content)
+                art_path.write_bytes(data)
                 store.segments.update_fields(segment_id, art_path=str(art_path))
     except Exception:
         pass
@@ -219,12 +283,61 @@ async def _fetch_mbid_art(segment_id: str, mbid: str, file_id: str) -> None:
 async def upload_art(segment_id: str, file: UploadFile = File(...)) -> dict:
     seg = _require_segment(segment_id)
 
-    suffix = Path(file.filename or "art.jpg").suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png"}:
-        raise HTTPException(status_code=400, detail="Only JPG/PNG images are accepted.")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image too large (max 20MB).")
 
-    art_path = store.file_dir(seg["file_id"]) / f"art_{segment_id}{suffix}"
-    art_path.write_bytes(await file.read())
+    data = _normalize_image(raw)
+
+    art_path = store.file_dir(seg["file_id"]) / f"art_{segment_id}.jpg"
+    art_path.write_bytes(data)
+    store.segments.update_fields(segment_id, art_path=str(art_path))
+
+    return {"segment_id": segment_id, "art_path": str(art_path)}
+
+
+# ---------------------------------------------------------------------------
+# POST /segment/{segment_id}/art-url
+# ---------------------------------------------------------------------------
+
+
+class ArtUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/{segment_id}/art-url")
+def upload_art_from_url(segment_id: str, body: ArtUrlRequest) -> dict:
+    """Fetch an image URL server-side (no CORS) and store it as cover art."""
+    seg = _require_segment(segment_id)
+
+    url = body.url.strip()
+    if not url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Only HTTPS URLs are accepted.")
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15, headers={"User-Agent": "split-music/1.0"}) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            content_type: str = resp.headers.get("Content-Type", "image/jpeg")
+            raw: bytes = resp.content
+            # Validate it looks like an image
+            if "image" not in content_type and not raw[:12].startswith(
+                (b"\xff\xd8\xff", b"\x89PNG", b"RIFF", b"GIF8", b"\x00\x00\x00\x0cJPG", b"BM")
+            ):
+                # Fall through to Pillow validation — _normalize_image will reject non-images
+                pass
+            data = _normalize_image(raw)
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch artwork URL: {exc.response.status_code} {exc.response.reason_phrase}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch artwork URL: {exc}") from exc
+
+    art_path = store.file_dir(seg["file_id"]) / f"art_{segment_id}.jpg"
+    art_path.write_bytes(data)
     store.segments.update_fields(segment_id, art_path=str(art_path))
 
     return {"segment_id": segment_id, "art_path": str(art_path)}

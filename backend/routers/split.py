@@ -91,6 +91,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Slice {i} failed: {exc}") from exc
 
+        draft = store.drafts.get(req.file_id, i)
         seg: store.SegmentMeta = {
             "segment_id": segment_id,
             "file_id": req.file_id,
@@ -98,17 +99,19 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
             "start_ms": start_ms,
             "end_ms": end_ms,
             "path": str(out_path),
-            "title": "",
-            "artist": meta["artist"],
-            "album": meta["album"],
-            "track": str(i + 1),
-            "year": "",
-            "genre": "",
-            "lyrics": "",
+            "title": draft["title"] if draft and draft["title"] else "",
+            "artist": draft["artist"] if draft and draft["artist"] else meta["artist"],
+            "album": draft["album"] if draft and draft["album"] else meta["album"],
+            "track": draft["track"] if draft and draft["track"] else str(i + 1),
+            "year": draft["year"] if draft else "",
+            "genre": draft["genre"] if draft else "",
+            "lyrics": draft["lyrics"] if draft else "",
             "art_path": meta["art_path"],
         }
         store.segments[segment_id] = seg
         result.append(SegmentInfo(segment_id=segment_id, index=i, start_ms=start_ms, end_ms=end_ms))
+    # clean drafts that were applied
+    store.drafts.delete_by_file(req.file_id)
 
     return ApplyResponse(file_id=req.file_id, segments=result)
 
@@ -142,6 +145,7 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Slice failed: {exc}") from exc
 
+    draft = store.drafts.get(req.file_id, index)
     seg: store.SegmentMeta = {
         "segment_id": segment_id,
         "file_id": req.file_id,
@@ -149,16 +153,18 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
         "start_ms": req.start_ms,
         "end_ms": req.end_ms,
         "path": str(out_path),
-        "title": "",
-        "artist": meta["artist"],
-        "album": meta["album"],
-        "track": str(index + 1),
-        "year": "",
-        "genre": "",
-        "lyrics": "",
+        "title": draft["title"] if draft and draft["title"] else "",
+        "artist": draft["artist"] if draft and draft["artist"] else meta["artist"],
+        "album": draft["album"] if draft and draft["album"] else meta["album"],
+        "track": draft["track"] if draft and draft["track"] else str(index + 1),
+        "year": draft["year"] if draft else "",
+        "genre": draft["genre"] if draft else "",
+        "lyrics": draft["lyrics"] if draft else "",
         "art_path": meta["art_path"],
     }
     store.segments[segment_id] = seg
+    if draft:
+        store.drafts.delete_one(req.file_id, index)
 
     return SegmentInfo(
         segment_id=segment_id,

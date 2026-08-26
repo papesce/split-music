@@ -17,6 +17,7 @@ export default defineConfig({
       '/split': 'http://127.0.0.1:8087',
       '/segment': 'http://127.0.0.1:8087',
       '/export': 'http://127.0.0.1:8087',
+      '/suggest': 'http://127.0.0.1:8087',
       '/transcribe': 'http://127.0.0.1:8087',
       '/health': 'http://127.0.0.1:8087',
       '/files': 'http://127.0.0.1:8087',

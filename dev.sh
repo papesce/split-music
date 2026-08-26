@@ -52,6 +52,7 @@ Commands:
   open      Open the frontend URL in the default browser
   all       Start both — each in a new Terminal tab on macOS,
             or as background processes with log files elsewhere
+  stop      Kill any running backend (uvicorn) and frontend (vite) processes
 
 Auto-install:
   backend   Creates backend/.venv and pip-installs if missing
@@ -112,12 +113,31 @@ cmd_open() {
   open "http://localhost:5893"
 }
 
+cmd_stop() {
+  local killed=0
+
+  # Kill uvicorn (backend)
+  if pgrep -f "uvicorn main:app" &>/dev/null; then
+    pkill -f "uvicorn main:app" && echo "✓ Stopped backend (uvicorn)" && killed=1
+  fi
+
+  # Kill vite dev server (frontend)
+  if pgrep -f "vite" &>/dev/null; then
+    pkill -f "vite" && echo "✓ Stopped frontend (vite)" && killed=1
+  fi
+
+  if [[ $killed -eq 0 ]]; then
+    echo "Nothing to stop — no backend or frontend processes found."
+  fi
+}
+
 case "$COMMAND" in
   help)     cmd_help ;;
   backend)  cmd_backend ;;
   ui)       cmd_ui ;;
   open)     cmd_open ;;
   all)      cmd_all ;;
+  stop)     cmd_stop ;;
   _backend) start_backend ;;
   _ui)      start_ui ;;
   *)

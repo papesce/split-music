@@ -68,6 +68,21 @@ class FileMeta(TypedDict):
     split_points_ms: str  # JSON-encoded list of ints; "" when not yet set
 
 
+class DraftMeta(TypedDict):
+    file_id: str
+    idx: int
+    start_ms: int
+    end_ms: int
+    title: str
+    artist: str
+    album: str
+    track: str
+    year: str
+    genre: str
+    lyrics: str
+    art_path: str
+
+
 # ---------------------------------------------------------------------------
 # DB bootstrap
 # ---------------------------------------------------------------------------
@@ -127,6 +142,30 @@ def _init_db() -> None:
                 FOREIGN KEY (file_id) REFERENCES files(file_id)
             );
         """)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                file_id     TEXT NOT NULL,
+                idx         INTEGER NOT NULL,
+                start_ms    INTEGER NOT NULL DEFAULT 0,
+                end_ms      INTEGER NOT NULL DEFAULT 0,
+                title       TEXT NOT NULL DEFAULT '',
+                artist      TEXT NOT NULL DEFAULT '',
+                album       TEXT NOT NULL DEFAULT '',
+                track       TEXT NOT NULL DEFAULT '',
+                year        TEXT NOT NULL DEFAULT '',
+                genre       TEXT NOT NULL DEFAULT '',
+                lyrics      TEXT NOT NULL DEFAULT '',
+                art_path    TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (file_id, idx),
+                FOREIGN KEY (file_id) REFERENCES files(file_id)
+            );
+        """)
+        # Migrate drafts: add start_ms/end_ms if missing
+        dcols = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+        if "start_ms" not in dcols:
+            conn.execute("ALTER TABLE drafts ADD COLUMN start_ms INTEGER NOT NULL DEFAULT 0")
+        if "end_ms" not in dcols:
+            conn.execute("ALTER TABLE drafts ADD COLUMN end_ms INTEGER NOT NULL DEFAULT 0")
 
 
 _init_db()
@@ -312,12 +351,92 @@ def _row_to_seg(row: sqlite3.Row) -> SegmentMeta:
     )
 
 
+def _row_to_draft(row: sqlite3.Row) -> DraftMeta:
+    return DraftMeta(
+        file_id=row["file_id"],
+        idx=row["idx"],
+        start_ms=row["start_ms"],
+        end_ms=row["end_ms"],
+        title=row["title"],
+        artist=row["artist"],
+        album=row["album"],
+        track=row["track"],
+        year=row["year"],
+        genre=row["genre"],
+        lyrics=row["lyrics"],
+        art_path=row["art_path"],
+    )
+
+
+class _DraftsProxy:
+    def get(self, file_id: str, idx: int) -> DraftMeta | None:
+        with _db() as conn:
+            row = conn.execute("SELECT * FROM drafts WHERE file_id = ? AND idx = ?", (file_id, idx)).fetchone()
+        return _row_to_draft(row) if row else None
+
+    def by_file(self, file_id: str) -> list[DraftMeta]:
+        with _db() as conn:
+            rows = conn.execute("SELECT * FROM drafts WHERE file_id = ? ORDER BY idx", (file_id,)).fetchall()
+        return [_row_to_draft(r) for r in rows]
+
+    def upsert(self, draft: DraftMeta) -> None:
+        with _db() as conn:
+            conn.execute(
+                """
+                INSERT INTO drafts (file_id, idx, start_ms, end_ms, title, artist, album, track, year, genre, lyrics, art_path)
+                VALUES (:file_id, :idx, :start_ms, :end_ms, :title, :artist, :album, :track, :year, :genre, :lyrics, :art_path)
+                ON CONFLICT(file_id, idx) DO UPDATE SET
+                    start_ms = excluded.start_ms,
+                    end_ms   = excluded.end_ms,
+                    title    = excluded.title,
+                    artist   = excluded.artist,
+                    album    = excluded.album,
+                    track    = excluded.track,
+                    year     = excluded.year,
+                    genre    = excluded.genre,
+                    lyrics   = excluded.lyrics,
+                    art_path = excluded.art_path
+                """,
+                draft,
+            )
+
+    def update_fields(self, file_id: str, idx: int, **kwargs: str | int) -> None:
+        if not kwargs:
+            return
+        # ensure row exists
+        existing = self.get(file_id, idx)
+        if not existing:
+            # create empty draft with defaults then patch
+            base: DraftMeta = {
+                "file_id": file_id, "idx": idx, "start_ms": 0, "end_ms": 0,
+                "title": "", "artist": "", "album": "", "track": str(idx + 1),
+                "year": "", "genre": "", "lyrics": "", "art_path": "",
+            }
+            base.update(kwargs)  # type: ignore
+            self.upsert(base)
+            return
+        cols = ", ".join(f"{k} = :{k}" for k in kwargs)
+        kwargs["file_id"] = file_id
+        kwargs["idx"] = idx
+        with _db() as conn:
+            conn.execute(f"UPDATE drafts SET {cols} WHERE file_id = :file_id AND idx = :idx", kwargs)
+
+    def delete_by_file(self, file_id: str) -> None:
+        with _db() as conn:
+            conn.execute("DELETE FROM drafts WHERE file_id = ?", (file_id,))
+
+    def delete_one(self, file_id: str, idx: int) -> None:
+        with _db() as conn:
+            conn.execute("DELETE FROM drafts WHERE file_id = ? AND idx = ?", (file_id, idx))
+
+
 # ---------------------------------------------------------------------------
 # Public singletons
 # ---------------------------------------------------------------------------
 
 files: _FilesProxy = _FilesProxy()
 segments: _SegmentsProxy = _SegmentsProxy()
+drafts: _DraftsProxy = _DraftsProxy()
 
 
 def new_id() -> str:

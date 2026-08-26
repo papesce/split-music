@@ -6,6 +6,7 @@ import type {
   SegmentInfo,
   SegmentMeta,
   IdentifyResult,
+  SuggestPromptResult,
   FileEntry,
   FileStateResponse,
 } from '@/types'
@@ -120,8 +121,42 @@ export async function uploadArt(segmentId: string, file: File): Promise<void> {
   await api.post(`/segment/${segmentId}/art`, form)
 }
 
+export async function uploadArtFromUrl(segmentId: string, url: string): Promise<void> {
+  await api.post(`/segment/${segmentId}/art-url`, { url })
+}
+
 export async function identifySegment(segmentId: string): Promise<IdentifyResult> {
   const { data } = await api.post<IdentifyResult>(`/segment/${segmentId}/identify`)
+  return data
+}
+
+export async function suggestFromLyrics(segmentId: string): Promise<SuggestPromptResult> {
+  const { data } = await api.post<SuggestPromptResult>(`/suggest/${segmentId}`)
+  return data
+}
+
+export async function fetchLyricsForSegment(
+  segmentId: string,
+  artist: string,
+  title: string,
+  album?: string,
+): Promise<import('@/types').LyricsResult> {
+  const { data } = await api.get<import('@/types').LyricsResult>(`/lyrics/${segmentId}`, {
+    params: { artist, title, album },
+  })
+  return data
+}
+
+export async function searchLyrics(
+  artist: string,
+  title: string,
+  album?: string,
+): Promise<import('@/types').LyricsResult> {
+  const { data } = await api.post<import('@/types').LyricsResult>('/lyrics/search', {
+    artist,
+    title,
+    album,
+  })
   return data
 }
 
@@ -131,6 +166,27 @@ export async function transcribeSegment(segmentId: string): Promise<string> {
     { model: 'base' },
   )
   return data.lyrics
+}
+
+export async function transcribePreview(fileId: string, startMs: number, endMs: number, idx: number): Promise<string> {
+  const { data } = await api.post<{ file_id: string; lyrics: string }>(`/transcribe/preview`, {
+    file_id: fileId,
+    start_ms: startMs,
+    end_ms: endMs,
+    idx,
+    model: 'base',
+  })
+  return data.lyrics
+}
+
+export async function patchDraft(fileId: string, idx: number, patch: Partial<import('@/types').DraftState>): Promise<import('@/types').DraftState> {
+  const { data } = await api.patch<import('@/types').DraftState>(`/files/${fileId}/drafts/${idx}`, patch)
+  return data
+}
+
+export async function listDrafts(fileId: string): Promise<import('@/types').DraftState[]> {
+  const { data } = await api.get<import('@/types').DraftState[]>(`/files/${fileId}/drafts`)
+  return data
 }
 
 export async function exportSingle(seg: SegmentMeta): Promise<void> {

@@ -15,9 +15,24 @@ export interface SessionSegmentRef {
   segment_id: string
 }
 
+export interface DraftState {
+  idx: number
+  start_ms: number
+  end_ms: number
+  title: string
+  artist: string
+  album: string
+  track: string
+  year: string
+  genre: string
+  lyrics: string
+  has_art: boolean
+}
+
 export interface FileStateResponse extends FileEntry {
   split_points_ms: number[]
   segments: SessionSegmentRef[]
+  drafts: DraftState[]
 }
 
 export interface UploadResponse {
@@ -72,4 +87,31 @@ export interface IdentifyResult {
   mbid: string
   confidence: number
   available: boolean
+}
+
+export interface SuggestPromptResult {
+  segment_id: string
+  prompt: string
+}
+
+export interface SuggestPasteResult {
+  title: string
+  artist: string
+  year: string
+  genre: string
+  lyrics: string
+  artwork: string
+  artwork_options: string[]
+  // markdown images pasted alongside JSON are extracted but not applied automatically
+}
+
+export interface LyricsResult {
+  trackName: string
+  artistName: string
+  albumName: string
+  duration: number
+  instrumental: boolean
+  plainLyrics: string
+  syncedLyrics: string
+  source: string
 }

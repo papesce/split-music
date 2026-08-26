@@ -29,6 +29,20 @@ class FileEntry(BaseModel):
     has_art: bool
 
 
+class DraftState(BaseModel):
+    idx: int
+    start_ms: int
+    end_ms: int
+    title: str
+    artist: str
+    album: str
+    track: str
+    year: str
+    genre: str
+    lyrics: str
+    has_art: bool
+
+
 class FileStateResponse(BaseModel):
     file_id: str
     original_name: str
@@ -42,6 +56,7 @@ class FileStateResponse(BaseModel):
     split_points_ms: list[int]
     # index → segment_id for tracks that have already been sliced
     segments: list[dict]
+    drafts: list[DraftState] = []
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +120,24 @@ def get_file_state(file_id: str) -> FileStateResponse:
         if Path(seg["path"]).exists()
     ]
 
+    drafts = store.drafts.by_file(file_id)
+    draft_list = [
+        DraftState(
+            idx=d["idx"],
+            start_ms=d["start_ms"],
+            end_ms=d["end_ms"],
+            title=d["title"],
+            artist=d["artist"],
+            album=d["album"],
+            track=d["track"],
+            year=d["year"],
+            genre=d["genre"],
+            lyrics=d["lyrics"],
+            has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+        )
+        for d in drafts
+    ]
+
     return FileStateResponse(
         file_id=meta["file_id"],
         original_name=meta["original_name"],
@@ -115,6 +148,7 @@ def get_file_state(file_id: str) -> FileStateResponse:
         has_art=bool(meta["art_path"] and Path(meta["art_path"]).exists()),
         split_points_ms=points,
         segments=seg_list,
+        drafts=draft_list,
     )
 
 
@@ -136,6 +170,57 @@ def save_split_points(file_id: str, req: SaveSplitPointsRequest) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Drafts — pre-split metadata (persisted per track index)
+# ---------------------------------------------------------------------------
+
+
+class DraftPatch(BaseModel):
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    track: str | None = None
+    year: str | None = None
+    genre: str | None = None
+    lyrics: str | None = None
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+
+@router.get("/{file_id}/drafts", response_model=list[DraftState])
+def list_drafts(file_id: str) -> list[DraftState]:
+    if file_id not in store.files:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    drafts = store.drafts.by_file(file_id)
+    return [
+        DraftState(
+            idx=d["idx"], start_ms=d["start_ms"], end_ms=d["end_ms"],
+            title=d["title"], artist=d["artist"], album=d["album"],
+            track=d["track"], year=d["year"], genre=d["genre"],
+            lyrics=d["lyrics"], has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+        )
+        for d in drafts
+    ]
+
+
+@router.patch("/{file_id}/drafts/{idx}", response_model=DraftState)
+def patch_draft(file_id: str, idx: int, req: DraftPatch) -> DraftState:
+    if file_id not in store.files:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    if patch:
+        store.drafts.update_fields(file_id, idx, **patch)
+    d = store.drafts.get(file_id, idx)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found after update.")
+    return DraftState(
+        idx=d["idx"], start_ms=d["start_ms"], end_ms=d["end_ms"],
+        title=d["title"], artist=d["artist"], album=d["album"],
+        track=d["track"], year=d["year"], genre=d["genre"],
+        lyrics=d["lyrics"], has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+    )
+
+
+# ---------------------------------------------------------------------------
 # DELETE /files/{file_id}
 # ---------------------------------------------------------------------------
 
@@ -146,4 +231,5 @@ def delete_file(file_id: str) -> None:
     if file_id not in store.files:
         raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
     store.segments.delete_by_file(file_id)
+    store.drafts.delete_by_file(file_id)
     store.files.delete(file_id)
