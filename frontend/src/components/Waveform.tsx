@@ -13,8 +13,8 @@ export interface WaveformHandle {
 }
 
 interface Props {
-  audioUrl: string            // URL to the full uploaded MP3
-  splitPoints: number[]       // ms timestamps (incl. 0 and duration)
+  audioUrl: string // URL to the full uploaded MP3
+  splitPoints: number[] // ms timestamps (incl. 0 and duration)
   durationMs: number
   onSplitPointsChange: (points: number[]) => void
   /** Called when the user clicks a waveform region — provides the region index (0-based) */
@@ -71,31 +71,35 @@ export function Waveform({
     return Math.round(containerWidth / (segDurSec * 1.2))
   }, [])
 
-  useImperativeHandle(ref, () => ({
-    playFrom(startMs: number, endMs?: number) {
-      const ws = wsRef.current
-      if (!ws) return
-      stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
-      ws.pause()
-      ws.seekTo(startMs / (durationMs || 1))
-      ws.play()
-    },
-    pause() {
-      stopAtRef.current = null
-      wsRef.current?.pause()
-    },
-    zoomTo(startMs: number, endMs: number) {
-      const ws = wsRef.current
-      if (!ws) return
-      const pxPerSec = computeZoomForWindow(startMs, endMs)
-      applyZoom(pxPerSec)
-      // Scroll so the segment start is visible (WaveSurfer scrolls when we seekTo)
-      ws.seekTo(startMs / (durationMs || 1))
-    },
-    resetZoom() {
-      applyZoom(1)
-    },
-  }), [durationMs, applyZoom, computeZoomForWindow])
+  useImperativeHandle(
+    ref,
+    () => ({
+      playFrom(startMs: number, endMs?: number) {
+        const ws = wsRef.current
+        if (!ws) return
+        stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
+        ws.pause()
+        ws.seekTo(startMs / (durationMs || 1))
+        ws.play()
+      },
+      pause() {
+        stopAtRef.current = null
+        wsRef.current?.pause()
+      },
+      zoomTo(startMs: number, endMs: number) {
+        const ws = wsRef.current
+        if (!ws) return
+        const pxPerSec = computeZoomForWindow(startMs, endMs)
+        applyZoom(pxPerSec)
+        // Scroll so the segment start is visible (WaveSurfer scrolls when we seekTo)
+        ws.seekTo(startMs / (durationMs || 1))
+      },
+      resetZoom() {
+        applyZoom(1)
+      },
+    }),
+    [durationMs, applyZoom, computeZoomForWindow],
+  )
 
   // Initialise WaveSurfer once
   useEffect(() => {
@@ -113,26 +117,35 @@ export function Waveform({
       plugins: [regions],
     })
 
-    ws.load(audioUrl)
+    ws.load(audioUrl).catch((err: unknown) => {
+      if (err instanceof Error && err.name === 'AbortError') return
+      throw err
+    })
 
     ws.on('ready', () => setReady(true))
     ws.on('play', () => setPlaying(true))
     ws.on('pause', () => setPlaying(false))
-    ws.on('finish', () => { setPlaying(false); stopAtRef.current = null })
+    ws.on('finish', () => {
+      setPlaying(false)
+      stopAtRef.current = null
+    })
     ws.on('audioprocess', onAudioProcess)
 
-    // Shift+click on a blank area → insert new split point
-    // Plain click just seeks (default WaveSurfer behaviour)
+    // Plain click → seek + resume playback; Shift+click → insert split point
     ws.on('interaction', (newTimeSec: number) => {
-      if (!onAddSplit) return
       if ((ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked) {
-        (ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = false
+        ;(ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = false
         return
       }
-      // Only add a split when Shift is held
       const shiftHeld = (ws as unknown as { _shiftHeld?: boolean })._shiftHeld
-      if (!shiftHeld) return
-      onAddSplit(Math.round(newTimeSec * 1000))
+      if (shiftHeld) {
+        // Shift+click → add a split point
+        onAddSplit?.(Math.round(newTimeSec * 1000))
+        return
+      }
+      // Plain click → seek and resume playback
+      stopAtRef.current = null
+      ws.play()
     })
 
     // Track shift key state so the interaction handler can read it synchronously
@@ -151,7 +164,7 @@ export function Waveform({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl])
 
   // Re-register audioprocess when callback identity changes
@@ -188,13 +201,7 @@ export function Waveform({
       bandRegionIds.current.add(r.id)
 
       r.on('click', () => {
-        // Block the waveform interaction handler from also firing
-        ;(ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = true
-        // Seek + play the segment
-        stopAtRef.current = next / 1000
-        ws.pause()
-        ws.seekTo(pt / (durationMs || 1))
-        ws.play()
+        // Let the waveform interaction handler take over (seek + play from click position)
         onRegionClick?.(i)
       })
     })
@@ -248,7 +255,6 @@ export function Waveform({
 
       {/* Transport bar — grouped: [transport] | [zoom] [hint] */}
       <div className="flex items-center gap-1 flex-wrap">
-
         {/* ── Transport group ── */}
         <button
           id="waveform-skip-bwd"
@@ -263,8 +269,12 @@ export function Waveform({
           title="Back 5s (←)"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M12.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0019 16V8a1 1 0 00-1.6-.8l-5.334 4zM4.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0011 16V8a1 1 0 00-1.6-.8l-5.334 4z" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0019 16V8a1 1 0 00-1.6-.8l-5.334 4zM4.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0011 16V8a1 1 0 00-1.6-.8l-5.334 4z"
+            />
           </svg>
         </button>
 
@@ -302,8 +312,12 @@ export function Waveform({
           title="Forward 5s (→)"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M11.933 12.8a1 1 0 000-1.6L6.6 7.2A1 1 0 005 8v8a1 1 0 001.6.8l5.333-4zM19.933 12.8a1 1 0 000-1.6l-5.333-4A1 1 0 0013 8v8a1 1 0 001.6.8l5.333-4z" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M11.933 12.8a1 1 0 000-1.6L6.6 7.2A1 1 0 005 8v8a1 1 0 001.6.8l5.333-4zM19.933 12.8a1 1 0 000-1.6l-5.333-4A1 1 0 0013 8v8a1 1 0 001.6.8l5.333-4z"
+            />
           </svg>
         </button>
 
@@ -322,9 +336,18 @@ export function Waveform({
                 Reset
               </button>
             )}
-            <svg className="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" />
+            <svg
+              className="w-3.5 h-3.5 text-zinc-400 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z"
+              />
             </svg>
             <input
               type="range"
@@ -359,13 +382,31 @@ export function Waveform({
                   <div className="fixed inset-0 z-10" onClick={() => setHintOpen(false)} />
                   <div className="absolute right-0 top-7 z-20 w-64 rounded-xl border border-zinc-200 bg-white shadow-lg p-3 text-xs text-zinc-600 flex flex-col gap-1.5">
                     <p className="font-semibold text-zinc-700 mb-1">Tips &amp; shortcuts</p>
-                    <p><kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">Space</kbd> Play / Pause</p>
-                    <p><kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">← →</kbd> Skip 5s back / forward</p>
+                    <p>
+                      <kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">
+                        Space
+                      </kbd>{' '}
+                      Play / Pause
+                    </p>
+                    <p>
+                      <kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">
+                        ← →
+                      </kbd>{' '}
+                      Skip 5s back / forward
+                    </p>
                     {onAddSplit && (
-                      <p><kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">Shift+click</kbd> Add split point</p>
+                      <p>
+                        <kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">
+                          Shift+click
+                        </kbd>{' '}
+                        Add split point
+                      </p>
                     )}
-                    <p>Drag <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-400 align-middle" /> red markers to adjust boundaries</p>
-                    <p>Click a coloured band to preview that segment</p>
+                    <p>
+                      Drag{' '}
+                      <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-400 align-middle" />{' '}
+                      red markers to adjust boundaries
+                    </p>
                   </div>
                 </>
               )}

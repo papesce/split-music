@@ -17,12 +17,26 @@ def get_duration_ms(path: str | Path) -> int:
     result = _run([
         "ffprobe", "-v", "quiet",
         "-print_format", "json",
-        "-show_format",
+        "-show_entries", "format=duration:stream=duration",
         str(path),
     ])
     data = json.loads(result.stdout)
-    duration_s = float(data["format"]["duration"])
-    return int(duration_s * 1000)
+
+    durations_s: list[float] = []
+
+    format_duration = data.get("format", {}).get("duration")
+    if format_duration is not None:
+        durations_s.append(float(format_duration))
+
+    for stream in data.get("streams", []):
+        stream_duration = stream.get("duration")
+        if stream_duration is not None:
+            durations_s.append(float(stream_duration))
+
+    if not durations_s:
+        raise ValueError("ffprobe did not return a duration")
+
+    return int(max(durations_s) * 1000)
 
 
 def detect_split_points(
@@ -39,7 +53,7 @@ def detect_split_points(
     min_duration = min_silence_ms / 1000.0
 
     result = _run([
-        "ffmpeg", "-i", str(path),
+        "ffmpeg", "-vn", "-i", str(path),
         "-af", f"silencedetect=noise={noise_db}:duration={min_duration}",
         "-f", "null", "-",
     ], check=False)
@@ -86,6 +100,7 @@ def slice_segment(
         "-t", str(duration_s),
         "-acodec", "libmp3lame",
         "-b:a", "320k",
+        "-write_xing", "1",
         str(out_path),
     ])
 

@@ -41,7 +41,10 @@ export function ExportPanel({ fileId, segments }: Props) {
   return (
     <div className="flex items-center gap-3 p-4 rounded-xl border border-zinc-200 bg-white">
       <button
-        onClick={() => { setDone(false); exportMutation.mutate() }}
+        onClick={() => {
+          setDone(false)
+          exportMutation.mutate()
+        }}
         disabled={exportMutation.isPending || segments.length === 0}
         className="px-5 py-2 rounded-lg bg-green-600 text-white font-medium text-sm hover:bg-green-700 disabled:opacity-40 transition-colors"
       >

@@ -40,10 +40,16 @@ export function FileInfo({ upload }: Props) {
             <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors rounded-xl">
               <svg
                 className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow"
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
               >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0zM11 8v6M8 11h6" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0zM11 8v6M8 11h6"
+                />
               </svg>
             </span>
           </button>
@@ -69,31 +75,27 @@ export function FileInfo({ upload }: Props) {
             className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-red-600 hover:bg-red-50 transition-colors"
           >
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M23.498 6.186a2.994 2.994 0 0 0-2.107-2.117C19.545 3.6 12 3.6 12 3.6s-7.545 0-9.391.469A2.994 2.994 0 0 0 .502 6.186 31.33 31.33 0 0 0 0 12a31.33 31.33 0 0 0 .502 5.814 2.994 2.994 0 0 0 2.107 2.117C4.455 20.4 12 20.4 12 20.4s7.545 0 9.391-.469a2.994 2.994 0 0 0 2.107-2.117A31.33 31.33 0 0 0 24 12a31.33 31.33 0 0 0-.502-5.814zM9.6 15.6V8.4l6.4 3.6-6.4 3.6z"/>
+              <path d="M23.498 6.186a2.994 2.994 0 0 0-2.107-2.117C19.545 3.6 12 3.6 12 3.6s-7.545 0-9.391.469A2.994 2.994 0 0 0 .502 6.186 31.33 31.33 0 0 0 0 12a31.33 31.33 0 0 0 .502 5.814 2.994 2.994 0 0 0 2.107 2.117C4.455 20.4 12 20.4 12 20.4s7.545 0 9.391-.469a2.994 2.994 0 0 0 2.107-2.117A31.33 31.33 0 0 0 24 12a31.33 31.33 0 0 0-.502-5.814zM9.6 15.6V8.4l6.4 3.6-6.4 3.6z" />
             </svg>
           </a>
         </div>
-        {upload.artist && (
-          <p className="text-sm text-zinc-600 truncate">{upload.artist}</p>
-        )}
-        {upload.album && (
-          <p className="text-sm text-zinc-400 truncate">{upload.album}</p>
-        )}
+        {upload.artist && <p className="text-sm text-zinc-600 truncate">{upload.artist}</p>}
+        {upload.album && <p className="text-sm text-zinc-400 truncate">{upload.album}</p>}
         <div className="flex gap-3 mt-1 flex-wrap">
           <Badge>{msToHMS(upload.duration_ms)}</Badge>
-          {upload.has_art
-            ? <Badge color="green">Cover art embedded</Badge>
-            : <Badge color="zinc">No cover art</Badge>
-          }
+          {upload.has_art ? (
+            <Badge color="green">Cover art embedded</Badge>
+          ) : (
+            <Badge color="zinc">No cover art</Badge>
+          )}
           {(upload.title || upload.artist) && <Badge color="blue">Tagged</Badge>}
         </div>
       </div>
 
       {/* Lightbox */}
-      {lightbox && artUrl && createPortal(
-        <Lightbox src={artUrl} onClose={() => setLightbox(false)} />,
-        document.body,
-      )}
+      {lightbox &&
+        artUrl &&
+        createPortal(<Lightbox src={artUrl} onClose={() => setLightbox(false)} />, document.body)}
     </div>
   )
 }
@@ -105,7 +107,9 @@ export function FileInfo({ upload }: Props) {
 function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
   // Close on Escape key
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -120,7 +124,7 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
         src={src}
         alt="Cover art full size"
         className="max-w-[90vw] max-h-[90vh] rounded-2xl shadow-2xl object-contain"
-        onClick={(e) => e.stopPropagation()}  // clicking image itself doesn't close
+        onClick={(e) => e.stopPropagation()} // clicking image itself doesn't close
       />
 
       {/* Close button */}
@@ -130,7 +134,12 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
         title="Close (Esc)"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M6 18L18 6M6 6l12 12"
+          />
         </svg>
       </button>
     </div>
@@ -153,9 +162,5 @@ function Badge({
     green: 'bg-green-50 text-green-700',
     blue: 'bg-blue-50 text-blue-700',
   }[color]
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
-      {children}
-    </span>
-  )
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>{children}</span>
 }

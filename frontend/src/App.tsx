@@ -3,10 +3,16 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { UploadResponse, SegmentMeta } from '@/types'
 import { detectSplitPoints, exportAllZip } from '@/api'
 import { FileUpload } from '@/components/FileUpload'
-import { Waveform, type WaveformHandle } from '@/components/Waveform'
+import { type WaveformHandle } from '@/components/Waveform'
 import { TrackList } from '@/components/TrackList'
+import { AppHeader, AppIcon } from '@/components/AppHeader'
+import { WaveformPanel } from '@/components/WaveformPanel'
+import { ExportFooter } from '@/components/ExportFooter'
 
 type Stage = 'upload' | 'working'
+
+// Header height in px — matches py-4 + text line height
+const HEADER_H = 65
 
 export default function App() {
   const qc = useQueryClient()
@@ -14,16 +20,19 @@ export default function App() {
   const [upload, setUpload] = useState<UploadResponse | null>(null)
   const [splitPoints, setSplitPoints] = useState<number[]>([])
   const waveformRef = useRef<WaveformHandle>(null)
+
   // Dynamic waveform panel height — measured via ResizeObserver
   const waveformPanelRef = useRef<HTMLDivElement>(null)
   const [waveformPanelH, setWaveformPanelH] = useState(232)
 
+  const [artModalOpen, setArtModalOpen] = useState(false)
+  const [playingTrack, setPlayingTrack] = useState<number | null>(null)
+
   // Sensitivity sliders
   const [minSilenceMs, setMinSilenceMs] = useState(700)
   const [silenceThreshDb, setSilenceThreshDb] = useState(-50)
-  const [showSensitivity, setShowSensitivity] = useState(false)
 
-  // Segments produced by the bulk split — drives the export panel
+  // Segments produced by the bulk split — drives the export footer
   const [splitSegments, setSplitSegments] = useState<SegmentMeta[]>([])
   const [exporting, setExporting] = useState(false)
 
@@ -37,11 +46,8 @@ export default function App() {
   }, [stage]) // re-attach when stage changes (panel mounts)
 
   const detectMutation = useMutation({
-    mutationFn: (fileId: string) =>
-      detectSplitPoints(fileId, minSilenceMs, silenceThreshDb),
-    onSuccess: (result) => {
-      setSplitPoints(result.split_points_ms)
-    },
+    mutationFn: (fileId: string) => detectSplitPoints(fileId, minSilenceMs, silenceThreshDb),
+    onSuccess: (result) => setSplitPoints(result.split_points_ms),
   })
 
   const handleUploaded = (result: UploadResponse) => {
@@ -62,7 +68,6 @@ export default function App() {
     setSplitSegments(segments)
   }, [])
 
-  // Shift+click on waveform → add split point
   const handleAddSplit = useCallback((positionMs: number) => {
     setSplitPoints((prev) => {
       if (prev.includes(positionMs)) return prev
@@ -70,18 +75,14 @@ export default function App() {
     })
   }, [])
 
-  // Waveform region click → scroll the matching track row into view (within the scrollable pane)
   const handleRegionClick = useCallback((index: number) => {
-    const el = document.getElementById(`track-row-${index}`)
-    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    document
+      .getElementById(`track-row-${index}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [])
 
-  // Delete a split boundary: remove the split point at position `index` (0 = first interior marker)
   const handleDeleteTrack = useCallback((index: number) => {
     setSplitPoints((prev) => {
-      // index maps to prev[index+1] — the right boundary of track `index`
-      // but we actually want to remove the interior boundary between track[index] and track[index+1]
-      // which is prev[index + 1] (skipping the 0 at prev[0])
       const next = [...prev]
       next.splice(index + 1, 1)
       return next
@@ -116,7 +117,7 @@ export default function App() {
 
   const splittableCount = splitPoints.length > 1 ? splitPoints.length - 1 : 0
 
-  // ─── Upload stage ────────────────────────────────────────────────────────
+  // ─── Upload stage ─────────────────────────────────────────────────────────
   if (stage === 'upload') {
     return (
       <div className="min-h-screen bg-zinc-50 text-zinc-900">
@@ -129,165 +130,76 @@ export default function App() {
     )
   }
 
-  // ─── Working stage — two-panel sticky layout ─────────────────────────────
-  //
-  //  ┌─────────────── header (fixed) ────────────────────┐
-  //  ├─────── sticky waveform panel (fixed below header) ┤
-  //  └──────────── scrollable track list below ──────────┘
-  //
-  const headerH = 65   // px — matches py-4 + text line height
-
+  // ─── Working stage — two-panel sticky layout ──────────────────────────────
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
+      {/* Fixed header */}
+      <div className="fixed top-0 inset-x-0 z-40" style={{ height: HEADER_H }}>
+        <AppHeader upload={upload} onArtClick={() => setArtModalOpen(true)} onReset={handleReset} />
+      </div>
 
-      {/* ── Fixed header ── */}
-      <header
-        className="fixed top-0 inset-x-0 z-40 border-b border-zinc-200 bg-white px-6 py-4 flex items-center justify-between"
-        style={{ height: headerH }}
-      >
-        <div className="flex items-center gap-2">
-          <AppIcon />
-          <h1 className="text-lg font-semibold">Split Music</h1>
+      {/* Album art lightbox */}
+      {artModalOpen && upload?.has_art && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center"
+          onClick={() => setArtModalOpen(false)}
+        >
+          <img
+            src={`/upload/${upload.file_id}/art`}
+            alt="cover"
+            className="max-w-[90vw] max-h-[90vh] rounded-xl shadow-2xl object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
-        {upload && (
-          <div className="flex items-center gap-4 min-w-0">
-            {/* Inline collapsed FileInfo */}
-            <div className="hidden sm:flex items-center gap-2 min-w-0">
-              {upload.has_art && (
-                <img
-                  src={`/upload/${upload.file_id}/art`}
-                  alt="cover"
-                  className="w-7 h-7 rounded object-cover shrink-0"
-                />
-              )}
-              <span className="text-sm text-zinc-700 font-medium truncate max-w-[200px]">
-                {upload.title || upload.original_name}
-              </span>
-              {upload.artist && (
-                <span className="text-sm text-zinc-400 truncate max-w-[140px]">{upload.artist}</span>
-              )}
-            </div>
-            <button
-              onClick={handleReset}
-              className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-zinc-200 hover:bg-zinc-100 transition-colors"
-            >
-              New file
-            </button>
-          </div>
-        )}
-      </header>
+      )}
 
-      {/* ── Sticky waveform panel ── */}
+      {/* Sticky waveform panel */}
       <div
         ref={waveformPanelRef}
         className="fixed inset-x-0 z-30 bg-zinc-900 border-b border-zinc-700 shadow-lg"
-        style={{ top: headerH }}
+        style={{ top: HEADER_H }}
       >
-        <div className="max-w-5xl mx-auto px-4 py-2 flex flex-col gap-2">
-          {/* Waveform controls bar */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-white/70 text-xs">
-              <span className="font-medium text-white">{splittableCount} track{splittableCount !== 1 ? 's' : ''}</span>
-              {detectMutation.isPending && <span className="text-white/50">· detecting…</span>}
-            </div>
-            <div className="flex items-center gap-2 relative">
-              {/* Sensitivity popover toggle */}
-              <button
-                onClick={() => setShowSensitivity((v) => !v)}
-                className="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 transition-colors flex items-center gap-1"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                </svg>
-                Sensitivity
-              </button>
-
-              {/* Sensitivity popover — click outside to close */}
-              {showSensitivity && (
-                <>
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setShowSensitivity(false)}
-                  />
-                  <div className="absolute right-0 top-8 z-20 w-72 p-4 bg-white border border-zinc-200 rounded-xl shadow-xl flex flex-col gap-4">
-                    <div className="flex flex-col gap-1">
-                      <div className="flex justify-between text-xs text-zinc-600">
-                        <span>Min silence</span>
-                        <span className="font-medium tabular-nums">{minSilenceMs} ms</span>
-                      </div>
-                      <input type="range" min={200} max={3000} step={50}
-                        value={minSilenceMs}
-                        onChange={(e) => setMinSilenceMs(Number(e.target.value))}
-                        className="w-full accent-blue-600" />
-                      <div className="flex justify-between text-[10px] text-zinc-400">
-                        <span>200ms (dense)</span><span>3000ms (sparse)</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="flex justify-between text-xs text-zinc-600">
-                        <span>Silence threshold</span>
-                        <span className="font-medium tabular-nums">{silenceThreshDb} dB</span>
-                      </div>
-                      <input type="range" min={-70} max={-20} step={1}
-                        value={silenceThreshDb}
-                        onChange={(e) => setSilenceThreshDb(Number(e.target.value))}
-                        className="w-full accent-blue-600" />
-                      <div className="flex justify-between text-[10px] text-zinc-400">
-                        <span>-70dB (sensitive)</span><span>-20dB (strict)</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => { setShowSensitivity(false); detectMutation.mutate(upload!.file_id) }}
-                      disabled={detectMutation.isPending}
-                      className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-40 transition-colors"
-                    >
-                      Re-detect with these settings
-                    </button>
-                  </div>
-                </>
-              )}
-
-              <button
-                onClick={() => detectMutation.mutate(upload!.file_id)}
-                disabled={detectMutation.isPending}
-                className="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white/80 disabled:opacity-40 transition-colors"
-              >
-                Re-detect
-              </button>
-            </div>
-          </div>
-
-          {/* Waveform canvas */}
-          <Waveform
-            ref={waveformRef}
-            audioUrl={`/segment/file/${upload!.file_id}/audio`}
-            splitPoints={splitPoints}
-            durationMs={upload!.duration_ms}
-            onSplitPointsChange={setSplitPoints}
-            onRegionClick={handleRegionClick}
-            onAddSplit={handleAddSplit}
-          />
-        </div>
+        <WaveformPanel
+          fileId={upload!.file_id}
+          durationMs={upload!.duration_ms}
+          splitPoints={splitPoints}
+          splittableCount={splittableCount}
+          isDetecting={detectMutation.isPending}
+          minSilenceMs={minSilenceMs}
+          silenceThreshDb={silenceThreshDb}
+          onSplitPointsChange={setSplitPoints}
+          onRegionClick={handleRegionClick}
+          onAddSplit={handleAddSplit}
+          onMinSilenceChange={setMinSilenceMs}
+          onSilenceThreshChange={setSilenceThreshDb}
+          onRedetect={() => detectMutation.mutate(upload!.file_id)}
+          waveformRef={waveformRef}
+        />
       </div>
 
-      {/* ── Scrollable track list ── */}
-      {/* top padding = header + waveform panel height, both measured dynamically */}
+      {/* Scrollable track list */}
       <main
         className="max-w-5xl mx-auto px-4 flex flex-col gap-4"
-        style={{ paddingTop: headerH + waveformPanelH + 16, paddingBottom: splitSegments.length > 0 ? 80 : 24 }}
+        style={{
+          paddingTop: HEADER_H + waveformPanelH + 16,
+          paddingBottom: splitSegments.length > 0 ? 80 : 24,
+        }}
       >
-        {detectMutation.isPending && (
-          <DetectSkeleton />
-        )}
+        {detectMutation.isPending && <DetectSkeleton />}
         {splittableCount >= 1 && !detectMutation.isPending && (
           <TrackList
             fileId={upload!.file_id}
             splitPoints={splitPoints}
             onSplitPointsChange={setSplitPoints}
-            onPlay={(startMs, endMs) => {
+            playingTrack={playingTrack}
+            onPlay={(index, startMs, endMs) => {
+              setPlayingTrack(index)
               waveformRef.current?.zoomTo(startMs, endMs)
               waveformRef.current?.playFrom(startMs, endMs)
+            }}
+            onPause={() => {
+              setPlayingTrack(null)
+              waveformRef.current?.pause()
             }}
             onDeleteTrack={handleDeleteTrack}
             onSplitComplete={handleSplitComplete}
@@ -295,47 +207,9 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Sticky export footer ── */}
-      {splitSegments.length > 0 && (
-        <div className="fixed bottom-0 inset-x-0 bg-white border-t border-zinc-200 px-6 py-3 flex items-center justify-between gap-4 z-30">
-          <span className="text-sm text-zinc-600">
-            <span className="font-semibold text-zinc-800">{splitSegments.length}</span>
-            {' '}track{splitSegments.length !== 1 ? 's' : ''} ready
-          </span>
-          <button
-            onClick={handleExportAll}
-            disabled={exporting}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-40 transition-colors"
-          >
-            {exporting ? (
-              <>
-                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Exporting…
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Export all as ZIP
-              </>
-            )}
-          </button>
-        </div>
-      )}
+      {/* Sticky export footer */}
+      <ExportFooter segments={splitSegments} exporting={exporting} onExport={handleExportAll} />
     </div>
-  )
-}
-
-function AppIcon() {
-  return (
-    <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-      <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z" />
-    </svg>
   )
 }
 

@@ -40,10 +40,7 @@ export async function detectSplitPoints(
   return data
 }
 
-export async function applySplit(
-  fileId: string,
-  splitPointsMs: number[],
-): Promise<ApplyResponse> {
+export async function applySplit(fileId: string, splitPointsMs: number[]): Promise<ApplyResponse> {
   const { data } = await api.post<ApplyResponse>('/split/apply', {
     file_id: fileId,
     split_points_ms: splitPointsMs,
@@ -83,7 +80,9 @@ export async function getSegment(segmentId: string): Promise<SegmentMeta> {
 
 export async function updateSegment(
   segmentId: string,
-  patch: Partial<Omit<SegmentMeta, 'segment_id' | 'file_id' | 'index' | 'start_ms' | 'end_ms' | 'has_art'>>,
+  patch: Partial<
+    Omit<SegmentMeta, 'segment_id' | 'file_id' | 'index' | 'start_ms' | 'end_ms' | 'has_art'>
+  >,
 ): Promise<SegmentMeta> {
   const { data } = await api.patch<SegmentMeta>(`/segment/${segmentId}`, patch)
   return data
