@@ -7,7 +7,7 @@ DELETE /files/{file_id}        — remove a file and all its segments from the s
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -207,6 +207,46 @@ def list_drafts(file_id: str) -> list[DraftState]:
         )
         for d in drafts
     ]
+
+
+@router.post("/{file_id}/drafts/{idx}/art")
+async def upload_draft_art(file_id: str, idx: int, file: UploadFile = File(...)) -> dict:  # type: ignore[no-redef]
+    if file_id not in store.files:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    # ensure draft exists (create if needed)
+    d = store.drafts.get(file_id, idx)
+    if not d:
+        # create empty draft then patch art
+        store.drafts.update_fields(file_id, idx)
+        d = store.drafts.get(file_id, idx)
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image too large (max 20MB).")
+    # reuse normalize logic from segment router
+    from routers.segment import _normalize_image
+
+    data = _normalize_image(raw)
+    art_path = store.file_dir(file_id) / f"art_draft_{idx}.jpg"
+    art_path.write_bytes(data)
+    store.drafts.update_fields(file_id, idx, art_path=str(art_path))
+    return {"file_id": file_id, "idx": idx, "art_path": str(art_path)}
+
+
+@router.get("/{file_id}/drafts/{idx}/art")
+def get_draft_art(file_id: str, idx: int) -> FileResponse:
+    if file_id not in store.files:
+        raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
+    d = store.drafts.get(file_id, idx)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    art = d.get("art_path", "")
+    if not art or not Path(art).exists():
+        raise HTTPException(status_code=404, detail="No art for this draft.")
+    suffix = Path(art).suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    return FileResponse(art, media_type=mime)
 
 
 @router.patch("/{file_id}/drafts/{idx}", response_model=DraftState)

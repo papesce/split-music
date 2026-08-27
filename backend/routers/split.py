@@ -4,6 +4,8 @@ POST /split/apply   — apply a list of timestamps to create segments
 """
 
 import itertools
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -92,6 +94,17 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
             raise HTTPException(status_code=500, detail=f"Slice {i} failed: {exc}") from exc
 
         draft = store.drafts.get(req.file_id, i)
+        # Prefer draft art if exists, else file art
+        art_path_val = meta["art_path"]
+        if draft and draft.get("art_path") and Path(draft["art_path"]).exists():
+            # copy draft art to new segment art path
+            src = Path(draft["art_path"])
+            dst = dest_dir / f"art_{segment_id}.jpg"
+            try:
+                shutil.copyfile(src, dst)
+                art_path_val = str(dst)
+            except Exception:
+                art_path_val = draft["art_path"]
         seg: store.SegmentMeta = {
             "segment_id": segment_id,
             "file_id": req.file_id,
@@ -106,7 +119,7 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
             "year": draft["year"] if draft else "",
             "genre": draft["genre"] if draft else "",
             "lyrics": draft["lyrics"] if draft else "",
-            "art_path": meta["art_path"],
+            "art_path": art_path_val,
         }
         store.segments[segment_id] = seg
         result.append(SegmentInfo(segment_id=segment_id, index=i, start_ms=start_ms, end_ms=end_ms))
@@ -146,6 +159,15 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
         raise HTTPException(status_code=500, detail=f"Slice failed: {exc}") from exc
 
     draft = store.drafts.get(req.file_id, index)
+    art_path_val = meta["art_path"]
+    if draft and draft.get("art_path") and Path(draft["art_path"]).exists():
+        src = Path(draft["art_path"])
+        dst = store.file_dir(req.file_id) / f"art_{segment_id}.jpg"
+        try:
+            shutil.copyfile(src, dst)
+            art_path_val = str(dst)
+        except Exception:
+            art_path_val = draft["art_path"]
     seg: store.SegmentMeta = {
         "segment_id": segment_id,
         "file_id": req.file_id,
@@ -160,7 +182,7 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
         "year": draft["year"] if draft else "",
         "genre": draft["genre"] if draft else "",
         "lyrics": draft["lyrics"] if draft else "",
-        "art_path": meta["art_path"],
+        "art_path": art_path_val,
     }
     store.segments[segment_id] = seg
     if draft:

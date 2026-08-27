@@ -9,9 +9,6 @@ import { AppHeader, AppIcon } from '@/components/AppHeader'
 import { WaveformPanel } from '@/components/WaveformPanel'
 import { ExportFooter } from '@/components/ExportFooter'
 import { WaveformErrorBoundary } from '@/components/WaveformErrorBoundary'
-import { FocusedTrackView } from '@/components/FocusedTrackView'
-import { useQuery as useRQQuery } from '@tanstack/react-query'
-import { listDrafts, getSegment } from '@/api'
 
 type Stage = 'loading' | 'resume' | 'upload' | 'working'
 
@@ -23,7 +20,7 @@ export default function App() {
   const [stage, setStage] = useState<Stage>('loading')
   const [upload, setUpload] = useState<UploadResponse | null>(null)
   const [splitPoints, setSplitPoints] = useState<number[]>([])
-  const [resumeSplitMap, setResumeSplitMap] = useState<Map<number, string>>(new Map())
+  const [splitMap, setSplitMap] = useState<Map<number, string>>(new Map())
   const waveformRef = useRef<WaveformHandle>(null)
   // Debounce ref for auto-saving split points
   const saveSplitPointsDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -43,7 +40,6 @@ export default function App() {
   const [splitSegments, setSplitSegments] = useState<SegmentMeta[]>([])
   const [exporting, setExporting] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
-  const [focusedSplitMap, setFocusedSplitMap] = useState<Map<number, string>>(new Map())
 
   // ── Fetch existing sessions on mount ──────────────────────────────────────
   const { data: existingFiles, isLoading: filesLoading } = useQuery({
@@ -106,7 +102,7 @@ export default function App() {
       const restoredMap = new Map(state.segments.map((s) => [s.index, s.segment_id]))
       setUpload(uploadLike)
       setSplitPoints(state.split_points_ms)
-      setResumeSplitMap(restoredMap)
+      setSplitMap(restoredMap)
       setStage('working')
     } catch (err) {
       console.error('[resume] Failed to load session state:', err)
@@ -127,9 +123,8 @@ export default function App() {
     setUpload(null)
     setSplitPoints([])
     setSplitSegments([])
-    setResumeSplitMap(new Map())
+    setSplitMap(new Map())
     setFocusedIndex(null)
-    setFocusedSplitMap(new Map())
     qc.clear()
     // Re-fetch the file list so the resume screen is up to date
     qc.invalidateQueries({ queryKey: ['files'] })
@@ -235,18 +230,7 @@ export default function App() {
     }
   }, [splitPoints, focusedIndex])
 
-  // Fetch drafts for focused view (so we can show draft title)
-  const { data: focusedDrafts } = useRQQuery({
-    queryKey: ['drafts', upload?.file_id],
-    queryFn: () => listDrafts(upload!.file_id),
-    enabled: !!upload && focusedIndex !== null,
-  })
-  // Need splitMap for focused track to know segmentId
-  useEffect(() => {
-    if (!upload || focusedIndex === null) return
-    // Try to get from already known segments or query drafts? We'll build from resumeSplitMap + splitSegments
-    // For simplicity, keep a map synced from TrackList via onSplitComplete; also query single segment if needed
-  }, [upload, focusedIndex])
+
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -385,7 +369,7 @@ export default function App() {
           onRedetect={() => detectMutation.mutate(upload!.file_id)}
           waveformRef={waveformRef}
           focusedIndex={focusedIndex}
-          focusedSegmentId={focusedIndex !== null ? (focusedSplitMap.get(focusedIndex) ?? resumeSplitMap.get(focusedIndex) ?? null) : null}
+          focusedSegmentId={focusedIndex !== null ? (splitMap.get(focusedIndex) ?? null) : null}
           onExitFocus={handleExitFocus}
         />
         </WaveformErrorBoundary>
@@ -400,17 +384,22 @@ export default function App() {
         }}
       >
         {detectMutation.isPending && <DetectSkeleton />}
-        {splittableCount >= 1 && !detectMutation.isPending && focusedIndex === null && (
+        {splittableCount >= 1 && !detectMutation.isPending && (
           <TrackList
             fileId={upload!.file_id}
             splitPoints={splitPoints}
-            initialSplitMap={resumeSplitMap}
+            initialSplitMap={splitMap}
             onSplitPointsChange={handleSplitPointsChange}
             playingTrack={playingTrack}
             onPlay={(index, startMs, endMs) => {
-              setPlayingTrack(index)
-              waveformRef.current?.zoomTo(startMs, endMs)
-              waveformRef.current?.playFrom(startMs, endMs)
+              if (focusedIndex !== null) {
+                setPlayingTrack(index)
+                waveformRef.current?.playFrom(0)
+              } else {
+                setPlayingTrack(index)
+                waveformRef.current?.zoomTo(startMs, endMs)
+                waveformRef.current?.playFrom(startMs, endMs)
+              }
             }}
             onPause={() => {
               setPlayingTrack(null)
@@ -419,51 +408,12 @@ export default function App() {
             onDeleteTrack={handleDeleteTrack}
             onSplitComplete={(segs) => {
               handleSplitComplete(segs)
-              // keep focused map in sync
               const m = new Map(segs.map((s) => [s.index, s.segment_id]))
-              setFocusedSplitMap(m)
+              setSplitMap(m)
             }}
-            onFocusTrack={(idx) => {
-              setFocusedIndex(idx)
-            }}
-          />
-        )}
-        {splittableCount >= 1 && !detectMutation.isPending && focusedIndex !== null && (
-          <FocusedTrackView
-            fileId={upload!.file_id}
-            index={focusedIndex}
-            startMs={splitPoints[focusedIndex] as number}
-            endMs={splitPoints[focusedIndex + 1] as number}
-            segmentId={focusedSplitMap.get(focusedIndex) ?? resumeSplitMap.get(focusedIndex) ?? null}
-            draft={focusedDrafts?.find((d) => d.idx === focusedIndex)}
-            isPlaying={playingTrack === focusedIndex}
-            onPlay={() => {
-              setPlayingTrack(focusedIndex)
-              // Isolated waveform: play from 0
-              waveformRef.current?.playFrom(0)
-            }}
-            onPause={() => {
-              setPlayingTrack(null)
-              waveformRef.current?.pause()
-            }}
-            onBoundariesChange={(s, e) => {
-              const updated = [...splitPoints]
-              updated[focusedIndex] = s
-              updated[focusedIndex + 1] = e
-              handleSplitPointsChange(updated)
-            }}
-            onExit={handleExitFocus}
-            onSplit={(sid) => {
-              setFocusedSplitMap((prev) => new Map(prev).set(focusedIndex, sid))
-              // also notify splitSegments
-              getSegment(sid).then((seg) => {
-                setSplitSegments((prev) => {
-                  const exists = prev.find((p) => p.segment_id === sid)
-                  if (exists) return prev
-                  return [...prev, seg]
-                })
-              })
-            }}
+            onFocusTrack={(idx) => setFocusedIndex(idx)}
+            focusedIndex={focusedIndex}
+            onExitFocus={handleExitFocus}
           />
         )}
       </main>

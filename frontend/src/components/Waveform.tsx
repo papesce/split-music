@@ -263,20 +263,22 @@ export function Waveform({
     ws.on('audioprocess', onAudioProcess)
   }, [onAudioProcess])
 
-  // S → split at cursor (when not typing, not focused)
+  // S → split at cursor (when not typing)
   useEffect(() => {
     if (!onAddSplit) return
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.code !== 'KeyS' || e.metaKey || e.ctrlKey || e.altKey) return
-      if (focusedIndex !== null && focusedIndex !== undefined) return
       if (cursorMs === null || !ready) return
       const minGap = 350
       if (cursorMs <= minGap || cursorMs >= durationMs - minGap) return
-      if (splitPoints.some((p) => Math.abs(p - (cursorMs as number)) <= minGap)) return
+      const isFocused = focusedIndex !== null && focusedIndex !== undefined
+      const s = isFocused ? (splitPoints[focusedIndex as number] ?? 0) : 0
+      const globalCursor = isFocused ? s + (cursorMs as number) : (cursorMs as number)
+      if (splitPoints.some((p) => Math.abs(p - globalCursor) <= minGap)) return
       e.preventDefault()
-      onAddSplit(cursorMs as number)
+      onAddSplit(globalCursor)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -414,19 +416,22 @@ export function Waveform({
   const isFocused = focusedIndex !== null && focusedIndex !== undefined
   const MIN_GAP_MS = 350
   const canSplitAtCursor = useMemo(() => {
-    if (!ready || isFocused || cursorMs === null || !onAddSplit) return false
+    if (!ready || cursorMs === null || !onAddSplit) return false
     if (cursorMs <= MIN_GAP_MS || cursorMs >= durationMs - MIN_GAP_MS) return false
-    return splitPoints.every((p) => Math.abs(p - cursorMs) > MIN_GAP_MS)
-  }, [ready, isFocused, cursorMs, onAddSplit, splitPoints, durationMs])
+    const s = isFocused ? (splitPoints[focusedIndex as number] ?? 0) : 0
+    const globalCursor = isFocused ? s + (cursorMs as number) : (cursorMs as number)
+    return splitPoints.every((p) => Math.abs(p - globalCursor) > MIN_GAP_MS)
+  }, [ready, cursorMs, onAddSplit, splitPoints, durationMs, focusedIndex, isFocused])
 
   const splitDisabledReason = useMemo(() => {
     if (!ready) return 'Waveform not ready'
-    if (isFocused) return 'Unavailable when focused'
     if (cursorMs === null) return 'Click waveform to position cursor'
     if (cursorMs <= MIN_GAP_MS || cursorMs >= durationMs - MIN_GAP_MS) return 'Too close to start/end'
-    if (splitPoints.some((p) => Math.abs(p - (cursorMs as number)) <= MIN_GAP_MS)) return 'Too close to existing split'
+    const s = isFocused ? (splitPoints[focusedIndex as number] ?? 0) : 0
+    const globalCursor = isFocused ? s + (cursorMs as number) : (cursorMs as number)
+    if (splitPoints.some((p) => Math.abs(p - globalCursor) <= MIN_GAP_MS)) return 'Too close to existing split'
     return null
-  }, [ready, isFocused, cursorMs, durationMs, splitPoints])
+  }, [ready, cursorMs, durationMs, splitPoints, focusedIndex, isFocused])
 
   function fmtMs(ms: number): string {
     const totalSec = Math.floor(ms / 1000)
@@ -523,10 +528,16 @@ export function Waveform({
         {ready && <span className="mx-1 h-5 w-px bg-zinc-200 shrink-0" />}
 
         {/* ── Split at cursor ── */}
-        {ready && !isFocused && onAddSplit && (
+        {ready && onAddSplit && (
           <button
             id="waveform-split-at-cursor"
-            onClick={() => { if (cursorMs !== null && canSplitAtCursor) onAddSplit(cursorMs) }}
+            onClick={() => {
+              if (cursorMs !== null && canSplitAtCursor) {
+                const s = isFocused ? (splitPoints[focusedIndex as number] ?? 0) : 0
+                const globalCursor = isFocused ? s + (cursorMs as number) : (cursorMs as number)
+                onAddSplit(globalCursor)
+              }
+            }}
             disabled={!canSplitAtCursor}
             title={splitDisabledReason ?? `Split at ${cursorMs !== null ? fmtMs(cursorMs) : 'cursor'} (S)`}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold disabled:opacity-40 hover:bg-red-700 transition-colors whitespace-nowrap"

@@ -105,6 +105,10 @@ export async function getSegment(segmentId: string): Promise<SegmentMeta> {
   return data
 }
 
+export async function deleteSegment(segmentId: string): Promise<void> {
+  await api.delete(`/segment/${segmentId}`)
+}
+
 export async function updateSegment(
   segmentId: string,
   patch: Partial<
@@ -119,6 +123,12 @@ export async function uploadArt(segmentId: string, file: File): Promise<void> {
   const form = new FormData()
   form.append('file', file)
   await api.post(`/segment/${segmentId}/art`, form)
+}
+
+export async function uploadDraftArt(fileId: string, idx: number, file: File): Promise<void> {
+  const form = new FormData()
+  form.append('file', file)
+  await api.post(`/files/${fileId}/drafts/${idx}/art`, form)
 }
 
 export async function uploadArtFromUrl(segmentId: string, url: string): Promise<void> {
@@ -268,4 +278,8 @@ export function previewAudioUrl(fileId: string, startMs: number, endMs: number):
 
 export function segmentArtUrl(segmentId: string): string {
   return `/segment/${segmentId}/art`
+}
+
+export function draftArtUrl(fileId: string, idx: number): string {
+  return `/files/${fileId}/drafts/${idx}/art`
 }
