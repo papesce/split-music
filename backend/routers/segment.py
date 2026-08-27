@@ -168,7 +168,7 @@ class BoundariesUpdate(BaseModel):
 
 
 @router.patch("/{segment_id}/boundaries", response_model=SegmentResponse)
-def update_boundaries(segment_id: str, update: BoundariesUpdate) -> SegmentResponse:
+async def update_boundaries(segment_id: str, update: BoundariesUpdate) -> SegmentResponse:
     seg = _require_segment(segment_id)
 
     if update.end_ms <= update.start_ms:
@@ -181,7 +181,7 @@ def update_boundaries(segment_id: str, update: BoundariesUpdate) -> SegmentRespo
     # Re-slice the source file; overwrite the same output path
     out_path = Path(seg["path"])
     try:
-        slice_segment(file_meta["path"], update.start_ms, update.end_ms, out_path)
+        await asyncio.to_thread(slice_segment, file_meta["path"], update.start_ms, update.end_ms, out_path)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Re-slice failed: {exc}") from exc
 

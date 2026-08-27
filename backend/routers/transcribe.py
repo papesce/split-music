@@ -1,5 +1,6 @@
 """POST /transcribe/... — run Whisper on a segment or ephemeral preview range."""
 
+import asyncio
 import tempfile
 import uuid
 from pathlib import Path
@@ -40,7 +41,7 @@ class PreviewResponse(BaseModel):
 
 
 @router.post("/preview", response_model=PreviewResponse)
-def transcribe_preview(req: PreviewRequest) -> PreviewResponse:
+async def transcribe_preview(req: PreviewRequest) -> PreviewResponse:
     meta = store.files.get(req.file_id)
     if not meta:
         raise HTTPException(status_code=404, detail=f"file_id '{req.file_id}' not found.")
@@ -64,11 +65,11 @@ def transcribe_preview(req: PreviewRequest) -> PreviewResponse:
     try:
         if start_ms is not None and end_ms is not None:
             tmp_path = Path(tempfile.gettempdir()) / f"split_preview_{req.file_id}_{uuid.uuid4().hex[:8]}.mp3"
-            slice_segment(meta["path"], start_ms, end_ms, tmp_path)
+            await asyncio.to_thread(slice_segment, meta["path"], start_ms, end_ms, tmp_path)
             audio_path = str(tmp_path)
         else:
             audio_path = meta["path"]
-        text = transcribe(audio_path, model_name=req.model)
+        text = await asyncio.to_thread(transcribe, audio_path, model_name=req.model)
     except HTTPException:
         raise
     except Exception as exc:
@@ -88,7 +89,7 @@ def transcribe_preview(req: PreviewRequest) -> PreviewResponse:
 
 
 @router.post("/{segment_id}", response_model=TranscribeResponse)
-def transcribe_segment(
+async def transcribe_segment(
     segment_id: str, req: TranscribeRequest = TranscribeRequest()
 ) -> TranscribeResponse:
     seg = store.segments.get(segment_id)
@@ -96,7 +97,7 @@ def transcribe_segment(
         raise HTTPException(status_code=404, detail=f"segment_id '{segment_id}' not found.")
 
     try:
-        text = transcribe(seg["path"], model_name=req.model)
+        text = await asyncio.to_thread(transcribe, seg["path"], model_name=req.model)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -63,6 +63,112 @@ export async function detectSplitPoints(
   return data
 }
 
+// --- Async job variants (non-blocking, pollable) ---
+export interface JobStatus {
+  job_id: string
+  kind: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  file_id: string | null
+  segment_id: string | null
+  result: Record<string, unknown> | null
+  error: string | null
+}
+
+export async function createDetectJob(
+  fileId: string,
+  minSilenceMs = 700,
+  silenceThreshDb = -50,
+): Promise<{ job_id: string }> {
+  const { data } = await api.post<{ job_id: string; status: string }>('/jobs/detect', {
+    file_id: fileId,
+    min_silence_ms: minSilenceMs,
+    silence_thresh_db: silenceThreshDb,
+  })
+  return data
+}
+
+export async function createTranscribeJob(opts: {
+  segment_id?: string
+  file_id?: string
+  start_ms?: number
+  end_ms?: number
+  idx?: number
+  model?: string
+}): Promise<{ job_id: string }> {
+  const { data } = await api.post<{ job_id: string; status: string }>('/jobs/transcribe', {
+    segment_id: opts.segment_id,
+    file_id: opts.file_id,
+    start_ms: opts.start_ms,
+    end_ms: opts.end_ms,
+    idx: opts.idx,
+    model: opts.model ?? 'base',
+  })
+  return data
+}
+
+export async function createIdentifyJob(segmentId: string): Promise<{ job_id: string }> {
+  const { data } = await api.post<{ job_id: string; status: string }>('/jobs/identify', {
+    segment_id: segmentId,
+  })
+  return data
+}
+
+export async function getJob(jobId: string): Promise<JobStatus> {
+  const { data } = await api.get<JobStatus>(`/jobs/${jobId}`)
+  return data
+}
+
+export async function pollJob(jobId: string, intervalMs = 800, timeoutMs = 300000): Promise<JobStatus> {
+  const start = Date.now()
+  while (true) {
+    const job = await getJob(jobId)
+    if (job.status === 'done' || job.status === 'failed') return job
+    if (Date.now() - start > timeoutMs) throw new Error('Job polling timed out')
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+}
+
+export async function detectSplitPointsAsync(
+  fileId: string,
+  minSilenceMs = 700,
+  silenceThreshDb = -50,
+): Promise<DetectResponse> {
+  const { job_id } = await createDetectJob(fileId, minSilenceMs, silenceThreshDb)
+  const job = await pollJob(job_id)
+  if (job.status === 'failed') throw new Error(job.error ?? 'Detect job failed')
+  const result = job.result as unknown as DetectResponse
+  return result
+}
+
+export async function transcribeSegmentAsync(segmentId: string, model = 'base'): Promise<string> {
+  const { job_id } = await createTranscribeJob({ segment_id: segmentId, model })
+  const job = await pollJob(job_id, 1000)
+  if (job.status === 'failed') throw new Error(job.error ?? 'Transcribe failed')
+  return (job.result as { lyrics: string }).lyrics
+}
+
+export async function transcribePreviewAsync(
+  fileId: string,
+  startMs: number,
+  endMs: number,
+  idx: number,
+  model = 'base',
+): Promise<string> {
+  const { job_id } = await createTranscribeJob({ file_id: fileId, start_ms: startMs, end_ms: endMs, idx, model })
+  const job = await pollJob(job_id, 1000)
+  if (job.status === 'failed') throw new Error(job.error ?? 'Transcribe failed')
+  return (job.result as { lyrics: string }).lyrics
+}
+
+export async function identifySegmentAsync(segmentId: string): Promise<IdentifyResult> {
+  const { job_id } = await createIdentifyJob(segmentId)
+  const job = await pollJob(job_id, 800)
+  if (job.status === 'failed') throw new Error(job.error ?? 'Identify failed')
+  const r = job.result as unknown as IdentifyResult & { available: boolean }
+  if (!r.available) return { ...(r as unknown as Record<string, unknown>), available: false } as unknown as IdentifyResult
+  return r as unknown as IdentifyResult
+}
+
 export async function applySplit(fileId: string, splitPointsMs: number[]): Promise<ApplyResponse> {
   const { data } = await api.post<ApplyResponse>('/split/apply', {
     file_id: fileId,

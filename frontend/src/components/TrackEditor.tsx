@@ -5,7 +5,7 @@ import type { SegmentMeta, DraftState, SuggestPasteResult, LyricsResult } from '
 import {
   getSegment,
   updateBoundaries,
-  identifySegment,
+  identifySegmentAsync,
   segmentAudioUrl,
   segmentArtUrl,
   draftArtUrl,
@@ -14,13 +14,13 @@ import {
   uploadArt,
   uploadDraftArt,
   deleteSegment,
-  transcribeSegment,
+  transcribeSegmentAsync,
+  transcribePreviewAsync,
   suggestFromLyrics,
   fetchLyricsForSegment,
   searchLyrics,
   suggestLyricsFromSegment,
   patchDraft,
-  transcribePreview,
   suggestFromText,
   suggestLyricsFromText,
   exportSingle,
@@ -154,7 +154,7 @@ export function TrackEditor(props: Props) {
   },[isSplit,onBoundariesChange,boundaryMutation])
 
   const identifyMutation = useMutation({
-    mutationFn: ()=> identifySegment(segmentId as string),
+    mutationFn: ()=> identifySegmentAsync(segmentId as string),
     onSuccess: (result)=>{
       if(!result.available) return
       const patch: Partial<SegmentMeta>={}
@@ -207,8 +207,8 @@ export function TrackEditor(props: Props) {
   }
 
   const artMutation = useMutation({ mutationFn:(file:File)=> isSplit ? uploadArt(segmentId as string, file) : uploadDraftArt(fileId, index, file), onSuccess:()=>{ setArtError(''); if(isSplit) qc.invalidateQueries({queryKey:queryKeys.segment(segmentId as string)}); else { qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)}); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)}) }}, onError:(err:unknown)=>{ const msg = err instanceof Error? err.message : (err as any)?.response?.data?.detail ?? 'Upload failed'; setArtError(String(msg)) }})
-  const transcribeMutationSeg = useMutation({ mutationFn: ()=> transcribeSegment(segmentId as string), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o, lyrics:text}))}})
-  const transcribeMutationDraft = useMutation({ mutationFn: ()=> transcribePreview(fileId,startMs,endMs,index), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.draft(fileId, index), (o:DraftState|undefined)=> ({...(o as DraftState), lyrics:text, idx:index, file_id:fileId})); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)}); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)})}})
+  const transcribeMutationSeg = useMutation({ mutationFn: ()=> transcribeSegmentAsync(segmentId as string), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o, lyrics:text}))}})
+  const transcribeMutationDraft = useMutation({ mutationFn: ()=> transcribePreviewAsync(fileId,startMs,endMs,index), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.draft(fileId, index), (o:DraftState|undefined)=> ({...(o as DraftState), lyrics:text, idx:index, file_id:fileId})); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)}); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)})}})
   const suggestMutationSeg = useMutation({ mutationFn: ()=> suggestFromLyrics(segmentId as string), onSuccess:(r)=> setSuggestPrompt(r.prompt)})
   const suggestMutationDraft = useMutation({ mutationFn: ()=> suggestFromText(lyrics), onSuccess:(p)=> setSuggestPrompt(p)})
   const lyricsSearchMutationSeg = useMutation({ mutationFn: ()=> suggestLyricsFromSegment(segmentId as string), onSuccess:(p)=> setLyricsSearchPrompt(p), onError:(err:unknown)=>{ const msg = err instanceof Error? err.message: String(err); const ax=(err as any)?.response?.data?.detail ?? msg; setLyricsError(ax)}})

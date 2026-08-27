@@ -3,6 +3,7 @@ POST /split/detect  — auto-detect silence-based split points
 POST /split/apply   — apply a list of timestamps to create segments
 """
 
+import asyncio
 import itertools
 import shutil
 from pathlib import Path
@@ -33,11 +34,12 @@ class DetectResponse(BaseModel):
 
 
 @router.post("/detect", response_model=DetectResponse)
-def detect(req: DetectRequest) -> DetectResponse:
+async def detect(req: DetectRequest) -> DetectResponse:
     meta = _require_file(req.file_id)
 
     try:
-        points = detect_split_points(
+        points = await asyncio.to_thread(
+            detect_split_points,
             meta["path"],
             min_silence_ms=req.min_silence_ms,
             silence_thresh_db=req.silence_thresh_db,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { UploadResponse, FileEntry, SegmentMeta } from '@/types'
-import { detectSplitPoints, getFileState, listFiles, saveSplitPoints, deleteFile } from '@/api'
+import { detectSplitPointsAsync, getFileState, listFiles, saveSplitPoints, deleteFile } from '@/api'
 import { queryKeys } from '@/api/queryKeys'
 
 export type Stage = 'loading' | 'resume' | 'upload' | 'working'
@@ -34,7 +34,7 @@ export function useFileSessionState() {
   }, [existingFiles, filesLoading])
 
   const detectMutation = useMutation({
-    mutationFn: (fileId: string) => detectSplitPoints(fileId, minSilenceMs, silenceThreshDb),
+    mutationFn: (fileId: string) => detectSplitPointsAsync(fileId, minSilenceMs, silenceThreshDb),
     onSuccess: (result) => {
       setSplitPointsRaw(result.split_points_ms)
       saveSplitPoints(result.file_id, result.split_points_ms).catch((err) =>

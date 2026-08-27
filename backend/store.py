@@ -201,7 +201,22 @@ class TrackRow(Base):
     expanded: Mapped[int] = mapped_column(Integer, default=1)
 
 
-engine = create_engine(f"sqlite:///{DB_PATH}", future=True, echo=False)
+class JobRow(Base):
+    __tablename__ = "jobs"
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # detect|transcribe|identify
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|running|done|failed
+    file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    segment_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    idx: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[int] = mapped_column(Integer, default=0)
+
+
+engine = create_engine(f"sqlite:///{DB_PATH}", future=True, echo=False, connect_args={"check_same_thread": False})
 SessionLocal: sessionmaker[Session] = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -722,6 +737,75 @@ class _DraftsProxy:
                 tracks.delete(t["track_id"])
 
 
+class _JobsProxy:
+    def create(self, kind: str, file_id: str | None = None, segment_id: str | None = None, idx: int | None = None, params: dict | None = None) -> str:
+        import json as _json
+        import time as _time
+
+        job_id = new_id()
+        now = int(_time.time())
+        with SessionLocal() as s:
+            row = JobRow(
+                job_id=job_id,
+                kind=kind,
+                status="pending",
+                file_id=file_id,
+                segment_id=segment_id,
+                idx=idx,
+                params_json=_json.dumps(params or {}),
+                created_at=now,
+                updated_at=now,
+            )
+            s.add(row)
+            s.commit()
+        return job_id
+
+    def get(self, job_id: str) -> dict | None:
+        with SessionLocal() as s:
+            row = s.get(JobRow, job_id)
+            if not row:
+                return None
+            import json as _json
+
+            return {
+                "job_id": row.job_id,
+                "kind": row.kind,
+                "status": row.status,
+                "file_id": row.file_id,
+                "segment_id": row.segment_id,
+                "idx": row.idx,
+                "params": _json.loads(row.params_json or "{}"),
+                "result": _json.loads(row.result_json) if row.result_json else None,
+                "error": row.error,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+
+    def update(self, job_id: str, **fields: str | int | None) -> None:
+        import time as _time
+
+        with SessionLocal() as s:
+            row = s.get(JobRow, job_id)
+            if not row:
+                return
+            for k, v in fields.items():
+                if hasattr(row, k):
+                    setattr(row, k, v)
+            row.updated_at = int(_time.time())
+            s.commit()
+
+    def set_running(self, job_id: str) -> None:
+        self.update(job_id, status="running")
+
+    def set_done(self, job_id: str, result: dict) -> None:
+        import json as _json
+
+        self.update(job_id, status="done", result_json=_json.dumps(result))
+
+    def set_failed(self, job_id: str, error: str) -> None:
+        self.update(job_id, status="failed", error=error)
+
+
 # ---------------------------------------------------------------------------
 # Public singletons
 # ---------------------------------------------------------------------------
@@ -730,6 +814,7 @@ files: _FilesProxy = _FilesProxy()
 tracks: _TracksProxy = _TracksProxy()
 segments: _SegmentsProxy = _SegmentsProxy()
 drafts: _DraftsProxy = _DraftsProxy()
+jobs: _JobsProxy = _JobsProxy()
 
 
 def new_id() -> str:
