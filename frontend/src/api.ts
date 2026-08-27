@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { api } from '@/api/client'
 import type {
   UploadResponse,
   DetectResponse,
@@ -10,8 +10,6 @@ import type {
   FileEntry,
   FileStateResponse,
 } from '@/types'
-
-const api = axios.create({ baseURL: '/' })
 
 export async function listFiles(): Promise<FileEntry[]> {
   const { data } = await api.get<FileEntry[]>('/files')

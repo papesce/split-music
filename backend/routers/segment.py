@@ -365,49 +365,25 @@ def stream_audio(segment_id: str) -> FileResponse:
 @router.delete("/{segment_id}", status_code=204)
 def delete_segment(segment_id: str) -> None:
     seg = _require_segment(segment_id)
-    # Preserve art for draft by copying
-    seg_art = seg.get("art_path", "")
-    draft_art_path = ""
-    if seg_art and Path(seg_art).exists():
-        # copy to draft art location
-        draft_art = store.file_dir(seg["file_id"]) / f"art_draft_{seg['index']}.jpg"
-        try:
-            import shutil
-
-            shutil.copyfile(seg_art, draft_art)
-            draft_art_path = str(draft_art)
-        except Exception:
-            draft_art_path = seg_art
-    # restore draft with segment's current metadata so no edits are lost
-    store.drafts.upsert(
-        {
-            "file_id": seg["file_id"],
-            "idx": seg["index"],
-            "start_ms": seg["start_ms"],
-            "end_ms": seg["end_ms"],
-            "title": seg["title"],
-            "artist": seg["artist"],
-            "album": seg["album"],
-            "track": seg["track"],
-            "year": seg["year"],
-            "genre": seg["genre"],
-            "lyrics": seg["lyrics"],
-            "art_path": draft_art_path,
-            "expanded": 1,
-        }
-    )
-    # delete audio file and art file (original segment art, not draft copy)
+    # Unified model: convert sliced track back to draft by clearing path
+    # Keep metadata, but unlink sliced audio and normalize art location
+    # Art stays on same track; if we copied to draft location previously, keep original
+    # Just clear the sliced audio path
     try:
         Path(seg["path"]).unlink(missing_ok=True)
     except Exception:
         pass
-    if seg_art and seg_art != draft_art_path:
-        try:
-            Path(seg_art).unlink(missing_ok=True)
-        except Exception:
-            pass
-    # delete DB entry
-    del store.segments[segment_id]
+    _ = seg.get("art_path", "")  # keep linter happy, art preserved
+    # Update track: path -> "", keep expanded=1
+    # Use unified tracks proxy directly to avoid shim duplication
+    track = store.tracks.get(segment_id)
+    if track:
+        store.tracks.update_fields(segment_id, path="")
+        # Ensure art points to draft location if it was segment art
+        # Keep existing art_path as-is (file still exists)
+    else:
+        # Fallback to shim path (should not happen)
+        del store.segments[segment_id]
 
 
 # ---------------------------------------------------------------------------

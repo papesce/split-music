@@ -78,8 +78,8 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
     if len(points) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 split points (start + end).")
 
-    # Remove stale segments for this file
-    store.segments.delete_by_file(req.file_id)
+    # Unified: clear all existing tracks for this file (both sliced and drafts)
+    store.tracks.delete_by_file(req.file_id)
 
     dest_dir = store.file_dir(req.file_id)
     result: list[SegmentInfo] = []
@@ -93,18 +93,11 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Slice {i} failed: {exc}") from exc
 
-        draft = store.drafts.get(req.file_id, i)
-        # Prefer draft art if exists, else file art
+        # No separate draft table anymore, but check if a track existed before (preserve metadata)
+        # Since we just deleted all, draft will be None — we still check for file art fallback
+        draft = None  # all drafts cleared together; metadata starts from file tags
         art_path_val = meta["art_path"]
-        if draft and draft.get("art_path") and Path(draft["art_path"]).exists():
-            # copy draft art to new segment art path
-            src = Path(draft["art_path"])
-            dst = dest_dir / f"art_{segment_id}.jpg"
-            try:
-                shutil.copyfile(src, dst)
-                art_path_val = str(dst)
-            except Exception:
-                art_path_val = draft["art_path"]
+        # If we had per-track drafts before bulk delete, they'd be gone — this is intentional for bulk re-split
         seg: store.SegmentMeta = {
             "segment_id": segment_id,
             "file_id": req.file_id,
@@ -123,8 +116,6 @@ def apply_split(req: ApplyRequest) -> ApplyResponse:
         }
         store.segments[segment_id] = seg
         result.append(SegmentInfo(segment_id=segment_id, index=i, start_ms=start_ms, end_ms=end_ms))
-    # clean drafts that were applied
-    store.drafts.delete_by_file(req.file_id)
 
     return ApplyResponse(file_id=req.file_id, segments=result)
 
@@ -158,16 +149,21 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Slice failed: {exc}") from exc
 
-    draft = store.drafts.get(req.file_id, index)
+    # If a unified track already exists for this idx, preserve its metadata
+    existing = store.tracks.get_by_file_idx(req.file_id, index)
+    draft = store.drafts.get(req.file_id, index) if not existing else None
+    # Prefer existing track metadata over draft
+    src_meta = existing if existing else draft
     art_path_val = meta["art_path"]
-    if draft and draft.get("art_path") and Path(draft["art_path"]).exists():
-        src = Path(draft["art_path"])
+    art_src = src_meta.get("art_path") if src_meta and src_meta.get("art_path") and Path(src_meta["art_path"]).exists() else None
+    if art_src:
+        src = Path(art_src)
         dst = store.file_dir(req.file_id) / f"art_{segment_id}.jpg"
         try:
             shutil.copyfile(src, dst)
             art_path_val = str(dst)
         except Exception:
-            art_path_val = draft["art_path"]
+            art_path_val = art_src
     seg: store.SegmentMeta = {
         "segment_id": segment_id,
         "file_id": req.file_id,
@@ -175,18 +171,19 @@ def apply_one(req: ApplyOneRequest) -> SegmentInfo:
         "start_ms": req.start_ms,
         "end_ms": req.end_ms,
         "path": str(out_path),
-        "title": draft["title"] if draft and draft["title"] else "",
-        "artist": draft["artist"] if draft and draft["artist"] else meta["artist"],
-        "album": draft["album"] if draft and draft["album"] else meta["album"],
-        "track": draft["track"] if draft and draft["track"] else str(index + 1),
-        "year": draft["year"] if draft else "",
-        "genre": draft["genre"] if draft else "",
-        "lyrics": draft["lyrics"] if draft else "",
+        "title": src_meta["title"] if src_meta and src_meta["title"] else "",
+        "artist": src_meta["artist"] if src_meta and src_meta["artist"] else meta["artist"],
+        "album": src_meta["album"] if src_meta and src_meta["album"] else meta["album"],
+        "track": src_meta["track"] if src_meta and src_meta["track"] else str(index + 1),
+        "year": src_meta["year"] if src_meta else "",
+        "genre": src_meta["genre"] if src_meta else "",
+        "lyrics": src_meta["lyrics"] if src_meta else "",
         "art_path": art_path_val,
     }
+    # If a track existed for this idx, delete it first (unique constraint on file_id+idx)
+    if existing:
+        store.tracks.delete(existing["track_id"])
     store.segments[segment_id] = seg
-    if draft:
-        store.drafts.delete_one(req.file_id, index)
 
     return SegmentInfo(
         segment_id=segment_id,

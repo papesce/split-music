@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/api/queryKeys'
 import type { SegmentMeta, DraftState, SuggestPasteResult, LyricsResult } from '@/types'
 import {
   getSegment,
@@ -102,12 +103,12 @@ export function TrackEditor(props: Props) {
   const persistExpanded = useCallback((next: boolean) => {
     if (isFocusedMode) return
     setExpanded(next)
-    patchDraft(fileId, index, { expanded: next } as Partial<DraftState>).then(()=> qc.invalidateQueries({ queryKey: ['drafts', fileId]})).catch(()=>{})
+    patchDraft(fileId, index, { expanded: next } as Partial<DraftState>).then(()=> qc.invalidateQueries({ queryKey: queryKeys.drafts(fileId)})).catch(()=>{})
   }, [fileId, index, qc, isFocusedMode])
 
   useEffect(()=>{ if(!confirmDelete) return; const onKey=(e:KeyboardEvent)=>{ if(e.key==='Escape') setConfirmDelete(false)}; window.addEventListener('keydown',onKey); return()=> window.removeEventListener('keydown',onKey)},[confirmDelete])
 
-  const { data: seg } = useQuery<SegmentMeta>({ queryKey: ['segment', segmentId], queryFn: ()=> getSegment(segmentId as string), enabled: isSplit })
+  const { data: seg } = useQuery<SegmentMeta>({ queryKey: queryKeys.segment(segmentId as string), queryFn: ()=> getSegment(segmentId as string), enabled: isSplit })
 
   const [fields, setFields] = useState({ title:'', artist:'', album:'', track:'', year:'', genre:'' })
   const [lyrics, setLyrics] = useState('')
@@ -129,7 +130,7 @@ export function TrackEditor(props: Props) {
         if (fields.year) patch.year = fields.year
         if (fields.genre) patch.genre = fields.genre
         if (lyrics) (patch as any).lyrics = lyrics
-        if (Object.keys(patch).length) { updateSegment(segmentId as string, patch).then(u=> qc.setQueryData(['segment', segmentId], u)).catch(()=>{}) }
+        if (Object.keys(patch).length) { updateSegment(segmentId as string, patch).then(u=> qc.setQueryData(queryKeys.segment(segmentId as string), u)).catch(()=>{}) }
       } else {
         setFields({ title: seg.title, artist: seg.artist, album: seg.album, track: seg.track, year: seg.year, genre: seg.genre })
         setLyrics(seg.lyrics)
@@ -144,7 +145,7 @@ export function TrackEditor(props: Props) {
 
   // boundary
   const boundaryDebounce = useRef<ReturnType<typeof setTimeout>|null>(null)
-  const boundaryMutation = useMutation({ mutationFn: ({s,e}:{s:number;e:number})=> updateBoundaries(segmentId as string, s,e), onSuccess:(u)=> qc.setQueryData(['segment', segmentId], u)})
+  const boundaryMutation = useMutation({ mutationFn: ({s,e}:{s:number;e:number})=> updateBoundaries(segmentId as string, s,e), onSuccess:(u)=> qc.setQueryData(queryKeys.segment(segmentId as string), u)})
   const handleBoundaryChange = useCallback((newStart:number,newEnd:number)=>{
     onBoundariesChange(newStart,newEnd)
     if(!isSplit) return
@@ -160,8 +161,8 @@ export function TrackEditor(props: Props) {
       const updated={...fields}
       for(const k of ['title','artist','album','year'] as const){ if(result[k] && !fields[k]){ updated[k]=result[k]; patch[k]=result[k]}}
       setFields(updated)
-      qc.setQueryData(['segment', segmentId], (old:SegmentMeta)=> ({...old, ...patch}))
-      if(result.mbid) setTimeout(()=> qc.invalidateQueries({queryKey:['segment', segmentId]}),4000)
+      qc.setQueryData(queryKeys.segment(segmentId as string), (old:SegmentMeta)=> ({...old, ...patch}))
+      if(result.mbid) setTimeout(()=> qc.invalidateQueries({queryKey:queryKeys.segment(segmentId as string)}),4000)
     }
   })
 
@@ -173,9 +174,9 @@ export function TrackEditor(props: Props) {
   const unsplitMutation = useMutation({
     mutationFn: ()=> deleteSegment(segmentId as string),
     onSuccess: ()=> {
-      qc.removeQueries({ queryKey: ['segment', segmentId] })
-      qc.invalidateQueries({ queryKey: ['drafts', fileId] })
-      qc.invalidateQueries({ queryKey: ['draft', fileId, index] })
+      qc.removeQueries({ queryKey: queryKeys.segment(segmentId as string) })
+      qc.invalidateQueries({ queryKey: queryKeys.drafts(fileId) })
+      qc.invalidateQueries({ queryKey: queryKeys.draft(fileId, index) })
       onUnclipped?.()
     }
   })
@@ -191,23 +192,23 @@ export function TrackEditor(props: Props) {
 
   useEffect(()=>{ setLyricsResult(null); setLyricsError(''); setLyricsErrorDetails(null); setFormatOpen(false)},[segmentId])
 
-  const saveMutationSeg = useMutation({ mutationFn: (patch:Partial<SegmentMeta>)=> updateSegment(segmentId as string, patch), onSuccess:(u)=> qc.setQueryData(['segment', segmentId], u)})
+  const saveMutationSeg = useMutation({ mutationFn: (patch:Partial<SegmentMeta>)=> updateSegment(segmentId as string, patch), onSuccess:(u)=> qc.setQueryData(queryKeys.segment(segmentId as string), u)})
   const saveMutationDraft = useMutation({
     mutationFn: (patch:Partial<DraftState>)=> patchDraft(fileId, index, {...patch, start_ms:startMs, end_ms:endMs}),
-    onSuccess:(u)=> qc.setQueryData(['draft', fileId, index], u)
+    onSuccess:(u)=> qc.setQueryData(queryKeys.draft(fileId, index), u)
   })
   const handleSaveField = (key:string, val:string)=>{
     if(isSplit) saveMutationSeg.mutate({[key]:val} as any)
-    else { saveMutationDraft.mutate({[key]:val} as any); qc.invalidateQueries({queryKey:['drafts', fileId]})}
+    else { saveMutationDraft.mutate({[key]:val} as any); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)})}
   }
   const handleSaveLyrics = (val:string)=>{
-    if(isSplit){ saveMutationSeg.mutate({lyrics:val} as any); qc.setQueryData(['segment', segmentId], (o:SegmentMeta)=> ({...o as SegmentMeta, lyrics: val}))}
-    else { saveMutationDraft.mutate({lyrics:val} as any); qc.invalidateQueries({queryKey:['drafts', fileId]}); qc.invalidateQueries({queryKey:['draft', fileId, index]})}
+    if(isSplit){ saveMutationSeg.mutate({lyrics:val} as any); qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o as SegmentMeta, lyrics: val}))}
+    else { saveMutationDraft.mutate({lyrics:val} as any); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)}); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)})}
   }
 
-  const artMutation = useMutation({ mutationFn:(file:File)=> isSplit ? uploadArt(segmentId as string, file) : uploadDraftArt(fileId, index, file), onSuccess:()=>{ setArtError(''); if(isSplit) qc.invalidateQueries({queryKey:['segment', segmentId]}); else { qc.invalidateQueries({queryKey:['draft', fileId, index]}); qc.invalidateQueries({queryKey:['drafts', fileId]}) }}, onError:(err:unknown)=>{ const msg = err instanceof Error? err.message : (err as any)?.response?.data?.detail ?? 'Upload failed'; setArtError(String(msg)) }})
-  const transcribeMutationSeg = useMutation({ mutationFn: ()=> transcribeSegment(segmentId as string), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(['segment', segmentId], (o:SegmentMeta)=> ({...o, lyrics:text}))}})
-  const transcribeMutationDraft = useMutation({ mutationFn: ()=> transcribePreview(fileId,startMs,endMs,index), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(['draft', fileId, index], (o:DraftState|undefined)=> ({...(o as DraftState), lyrics:text, idx:index, file_id:fileId})); qc.invalidateQueries({queryKey:['draft', fileId, index]}); qc.invalidateQueries({queryKey:['drafts', fileId]})}})
+  const artMutation = useMutation({ mutationFn:(file:File)=> isSplit ? uploadArt(segmentId as string, file) : uploadDraftArt(fileId, index, file), onSuccess:()=>{ setArtError(''); if(isSplit) qc.invalidateQueries({queryKey:queryKeys.segment(segmentId as string)}); else { qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)}); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)}) }}, onError:(err:unknown)=>{ const msg = err instanceof Error? err.message : (err as any)?.response?.data?.detail ?? 'Upload failed'; setArtError(String(msg)) }})
+  const transcribeMutationSeg = useMutation({ mutationFn: ()=> transcribeSegment(segmentId as string), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o, lyrics:text}))}})
+  const transcribeMutationDraft = useMutation({ mutationFn: ()=> transcribePreview(fileId,startMs,endMs,index), onSuccess:(text)=>{ setLyrics(text); qc.setQueryData(queryKeys.draft(fileId, index), (o:DraftState|undefined)=> ({...(o as DraftState), lyrics:text, idx:index, file_id:fileId})); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)}); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)})}})
   const suggestMutationSeg = useMutation({ mutationFn: ()=> suggestFromLyrics(segmentId as string), onSuccess:(r)=> setSuggestPrompt(r.prompt)})
   const suggestMutationDraft = useMutation({ mutationFn: ()=> suggestFromText(lyrics), onSuccess:(p)=> setSuggestPrompt(p)})
   const lyricsSearchMutationSeg = useMutation({ mutationFn: ()=> suggestLyricsFromSegment(segmentId as string), onSuccess:(p)=> setLyricsSearchPrompt(p), onError:(err:unknown)=>{ const msg = err instanceof Error? err.message: String(err); const ax=(err as any)?.response?.data?.detail ?? msg; setLyricsError(ax)}})
@@ -236,16 +237,16 @@ export function TrackEditor(props: Props) {
     const fetched=(lyricsResult.plainLyrics||'').trim(); if(!fetched) return
     const next = mode==='replace' || !lyrics.trim() ? fetched : `${lyrics.trim()}\n\n${fetched}`
     setLyrics(next)
-    if(isSplit){ qc.setQueryData(['segment', segmentId], (o:SegmentMeta)=> ({...(o as SegmentMeta), lyrics: next})); saveMutationSeg.mutate({lyrics: next} as any)}
-    else { saveMutationDraft.mutate({lyrics: next} as any); qc.invalidateQueries({queryKey:['drafts', fileId]}); qc.invalidateQueries({queryKey:['draft', fileId, index]})}
+    if(isSplit){ qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...(o as SegmentMeta), lyrics: next})); saveMutationSeg.mutate({lyrics: next} as any)}
+    else { saveMutationDraft.mutate({lyrics: next} as any); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)}); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)})}
     setLyricsResult(null)
   }
   function applyPasteResult(result:SuggestPasteResult){
     if(isSplit){
       const patch: Partial<SegmentMeta>={ title: result.title || fields.title, artist: result.artist || fields.artist, year: result.year || fields.year, genre: result.genre || fields.genre }
       const corrected=result.lyrics?.trim()? result.lyrics : ''
-      if(corrected){ setLyrics(corrected); (patch as any).lyrics=corrected; qc.setQueryData(['segment', segmentId], (o:SegmentMeta)=> ({...o, ...patch, lyrics:corrected}))}
-      else qc.setQueryData(['segment', segmentId], (o:SegmentMeta)=> ({...o, ...patch}))
+      if(corrected){ setLyrics(corrected); (patch as any).lyrics=corrected; qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o, ...patch, lyrics:corrected}))}
+      else qc.setQueryData(queryKeys.segment(segmentId as string), (o:SegmentMeta)=> ({...o, ...patch}))
       setFields({...fields, title:String(patch.title), artist:String(patch.artist), year:String(patch.year), genre:String(patch.genre)})
       saveMutationSeg.mutate(patch as any)
     } else {
@@ -255,7 +256,7 @@ export function TrackEditor(props: Props) {
       if(result.year){ patch.year=result.year; setFields(f=>({...f,year:result.year}))}
       if(result.genre){ patch.genre=result.genre; setFields(f=>({...f,genre:result.genre}))}
       if(result.lyrics?.trim()){ patch.lyrics=result.lyrics; setLyrics(result.lyrics)}
-      if(Object.keys(patch).length>0){ saveMutationDraft.mutate(patch); qc.invalidateQueries({queryKey:['drafts', fileId]}); qc.invalidateQueries({queryKey:['draft', fileId, index]})}
+      if(Object.keys(patch).length>0){ saveMutationDraft.mutate(patch); qc.invalidateQueries({queryKey:queryKeys.drafts(fileId)}); qc.invalidateQueries({queryKey:queryKeys.draft(fileId, index)})}
     }
     setSuggestPrompt(null)
   }

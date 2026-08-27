@@ -1,41 +1,97 @@
 """
-Persistent store backed by SQLite (stdlib sqlite3).
-All audio files live in TEMP_DIR; metadata survives server restarts
-as long as TEMP_DIR still exists on the same machine.
+Unified persistent store.
+
+- Files live in DATA_DIR (XDG_DATA_HOME or ~/.local/share/split-music)
+  DB at DATA_DIR/split_music.db so it survives reboots and tmp cleanups.
+  Legacy TEMP_DIR pointer file is migrated automatically.
+
+- Two tables only: files, tracks.
+  tracks unifies the old drafts + segments tables.  A track with path == ""
+  is a draft (not yet sliced); with path != "" is sliced.
+  split_points are derived from tracks but also cached in files.split_points_ms
+  for fast resume.
+
+- SQLAlchemy 2.0 + sqlite, with thin dict-like proxies for backward compat.
 """
 
+from __future__ import annotations
+
+import os
 import sqlite3
 import tempfile
 import uuid
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
 
+from sqlalchemy import (
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    select,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
 # ---------------------------------------------------------------------------
-# Temp directory — shared home for all uploaded / sliced audio
+# Data / temp directory
 # ---------------------------------------------------------------------------
 
-_STATE_FILE = Path(tempfile.gettempdir()) / "split_music_dir.txt"
 
-
-def _get_temp_dir() -> Path:
-    """Return a stable temp dir that persists across server restarts."""
-    if _STATE_FILE.exists():
-        d = Path(_STATE_FILE.read_text().strip())
-        if d.exists():
+def _get_data_dir() -> Path:
+    """Prefer XDG_DATA_HOME, then ~/.local/share, then stable temp dir."""
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        d = Path(xdg) / "split-music"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    # ~/.local/share/split-music
+    try:
+        d = Path.home() / ".local" / "share" / "split-music"
+        d.mkdir(parents=True, exist_ok=True)
+        # sanity: writable
+        if os.access(d, os.W_OK):
             return d
+    except Exception:
+        pass
+    # fallback: legacy stable temp dir (with pointer file for continuity)
+    legacy_state = Path(tempfile.gettempdir()) / "split_music_dir.txt"
+    if legacy_state.exists():
+        try:
+            p = Path(legacy_state.read_text().strip())
+            if p.exists() and os.access(p, os.W_OK):
+                return p
+        except Exception:
+            pass
     d = Path(tempfile.mkdtemp(prefix="split_music_"))
-    _STATE_FILE.write_text(str(d))
+    try:
+        legacy_state.write_text(str(d))
+    except Exception:
+        pass
     return d
 
 
-TEMP_DIR = _get_temp_dir()
-DB_PATH = TEMP_DIR / "split_music.db"
+DATA_DIR: Path = _get_data_dir()
+# Keep alias for existing code that uses TEMP_DIR as file storage root
+TEMP_DIR: Path = DATA_DIR
+DB_PATH: Path = DATA_DIR / "split_music.db"
 
+# Migrate legacy DB file if new DB doesn't exist yet
+try:
+    _legacy_state_file = Path(tempfile.gettempdir()) / "split_music_dir.txt"
+    if not DB_PATH.exists() and _legacy_state_file.exists():
+        _legacy_dir = Path(_legacy_state_file.read_text().strip())
+        _legacy_db = _legacy_dir / "split_music.db"
+        if _legacy_db.exists():
+            import shutil
+
+            shutil.copy2(_legacy_db, DB_PATH)
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
-# TypedDicts (unchanged interface for the rest of the codebase)
+# TypedDicts (public interface — unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -45,7 +101,7 @@ class SegmentMeta(TypedDict):
     index: int
     start_ms: int
     end_ms: int
-    path: str  # absolute path to the sliced MP3
+    path: str
     title: str
     artist: str
     album: str
@@ -53,19 +109,19 @@ class SegmentMeta(TypedDict):
     year: str
     genre: str
     lyrics: str
-    art_path: str  # absolute path to cover image (may be empty)
+    art_path: str
 
 
 class FileMeta(TypedDict):
     file_id: str
     original_name: str
-    path: str  # absolute path to the uploaded MP3
+    path: str
     duration_ms: int
     title: str
     artist: str
     album: str
     art_path: str
-    split_points_ms: str  # JSON-encoded list of ints; "" when not yet set
+    split_points_ms: str
 
 
 class DraftMeta(TypedDict):
@@ -81,139 +137,296 @@ class DraftMeta(TypedDict):
     genre: str
     lyrics: str
     art_path: str
-    expanded: int  # 1 = expanded, 0 = collapsed
+    expanded: int
+
+
+# TrackMeta mirrors SegmentMeta + expanded, unified
+class TrackMeta(TypedDict):
+    track_id: str
+    file_id: str
+    idx: int
+    start_ms: int
+    end_ms: int
+    path: str
+    title: str
+    artist: str
+    album: str
+    track: str
+    year: str
+    genre: str
+    lyrics: str
+    art_path: str
+    expanded: int
 
 
 # ---------------------------------------------------------------------------
-# DB bootstrap
+# SQLAlchemy models
 # ---------------------------------------------------------------------------
 
 
-def _connect() -> sqlite3.Connection:
+class Base(DeclarativeBase):
+    pass
+
+
+class FileRow(Base):
+    __tablename__ = "files"
+    file_id: Mapped[str] = mapped_column(String, primary_key=True)
+    original_name: Mapped[str] = mapped_column(String, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String, default="")
+    artist: Mapped[str] = mapped_column(String, default="")
+    album: Mapped[str] = mapped_column(String, default="")
+    art_path: Mapped[str] = mapped_column(String, default="")
+    split_points_ms: Mapped[str] = mapped_column(Text, default="")
+
+
+class TrackRow(Base):
+    __tablename__ = "tracks"
+    __table_args__ = (UniqueConstraint("file_id", "idx", name="uq_tracks_file_idx"),)
+    track_id: Mapped[str] = mapped_column(String, primary_key=True)
+    file_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, default=0)
+    end_ms: Mapped[int] = mapped_column(Integer, default=0)
+    path: Mapped[str] = mapped_column(Text, default="")  # "" = draft / unsliced
+    title: Mapped[str] = mapped_column(String, default="")
+    artist: Mapped[str] = mapped_column(String, default="")
+    album: Mapped[str] = mapped_column(String, default="")
+    track: Mapped[str] = mapped_column(String, default="")
+    year: Mapped[str] = mapped_column(String, default="")
+    genre: Mapped[str] = mapped_column(String, default="")
+    lyrics: Mapped[str] = mapped_column(Text, default="")
+    art_path: Mapped[str] = mapped_column(String, default="")
+    expanded: Mapped[int] = mapped_column(Integer, default=1)
+
+
+engine = create_engine(f"sqlite:///{DB_PATH}", future=True, echo=False)
+SessionLocal: sessionmaker[Session] = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+def _migrate_legacy_sqlite() -> None:
+    """Migrate old segments/drafts tables into tracks if they exist."""
+    # Use raw sqlite connection to inspect and migrate before ORM create_all
     conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-@contextmanager
-def _db() -> Generator[sqlite3.Connection, None, None]:
-    conn = _connect()
     try:
-        yield conn
-        conn.commit()
+        cur = conn.cursor()
+        tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        # Files table column migration (split_points_ms) handled by ORM create_all + alter
+        if "segments" in tables or "drafts" in tables:
+            # Ensure tracks table exists first (create if missing)
+            # We'll create via raw SQL then ORM will see it
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tracks (
+                    track_id TEXT PRIMARY KEY,
+                    file_id TEXT NOT NULL,
+                    idx INTEGER NOT NULL,
+                    start_ms INTEGER NOT NULL DEFAULT 0,
+                    end_ms INTEGER NOT NULL DEFAULT 0,
+                    path TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    artist TEXT NOT NULL DEFAULT '',
+                    album TEXT NOT NULL DEFAULT '',
+                    track TEXT NOT NULL DEFAULT '',
+                    year TEXT NOT NULL DEFAULT '',
+                    genre TEXT NOT NULL DEFAULT '',
+                    lyrics TEXT NOT NULL DEFAULT '',
+                    art_path TEXT NOT NULL DEFAULT '',
+                    expanded INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(file_id, idx)
+                )
+            """)
+            conn.commit()
+            # Migrate segments -> tracks (path != "")
+            if "segments" in tables:
+                for row in cur.execute("SELECT segment_id, file_id, idx, start_ms, end_ms, path, title, artist, album, track, year, genre, lyrics, art_path FROM segments"):
+                    seg_id, file_id, idx, s, e, path, title, artist, album, track, year, genre, lyrics, art_path = row
+                    # insert or ignore if already exists (by file_id, idx)
+                    cur.execute("""
+                        INSERT OR IGNORE INTO tracks (track_id, file_id, idx, start_ms, end_ms, path, title, artist, album, track, year, genre, lyrics, art_path, expanded)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """, (seg_id, file_id, idx, s, e, path, title, artist, album, track, year, genre, lyrics, art_path))
+                conn.commit()
+            # Migrate drafts -> tracks where not already present
+            if "drafts" in tables:
+                # drafts schema may vary, get columns dynamically
+                cols = [r[1] for r in cur.execute("PRAGMA table_info(drafts)").fetchall()]
+                has_start = "start_ms" in cols
+                has_end = "end_ms" in cols
+                has_expanded = "expanded" in cols
+                for row in cur.execute("SELECT * FROM drafts"):
+                    # Build dict from row
+                    row_dict = dict(zip(cols, row))
+                    fid = row_dict["file_id"]
+                    idx = row_dict["idx"]
+                    # skip if track already exists for this file/idx (segment took precedence)
+                    exists = cur.execute("SELECT 1 FROM tracks WHERE file_id=? AND idx=?", (fid, idx)).fetchone()
+                    if exists:
+                        continue
+                    new_id = uuid.uuid4().hex
+                    cur.execute("""
+                        INSERT INTO tracks (track_id, file_id, idx, start_ms, end_ms, path, title, artist, album, track, year, genre, lyrics, art_path, expanded)
+                        VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        new_id, fid, idx,
+                        row_dict.get("start_ms", 0) if has_start else 0,
+                        row_dict.get("end_ms", 0) if has_end else 0,
+                        row_dict.get("title", ""),
+                        row_dict.get("artist", ""),
+                        row_dict.get("album", ""),
+                        row_dict.get("track", str(idx + 1)),
+                        row_dict.get("year", ""),
+                        row_dict.get("genre", ""),
+                        row_dict.get("lyrics", ""),
+                        row_dict.get("art_path", ""),
+                        row_dict.get("expanded", 1) if has_expanded else 1,
+                    ))
+                conn.commit()
+            # Optionally drop old tables after migration (keep for safety, but we can leave)
+            # cur.execute("DROP TABLE IF EXISTS segments")
+            # cur.execute("DROP TABLE IF EXISTS drafts")
+            # conn.commit()
     finally:
         conn.close()
 
 
-def _init_db() -> None:
-    with _db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS files (
-                file_id          TEXT PRIMARY KEY,
-                original_name    TEXT NOT NULL,
-                path             TEXT NOT NULL,
-                duration_ms      INTEGER NOT NULL,
-                title            TEXT NOT NULL DEFAULT '',
-                artist           TEXT NOT NULL DEFAULT '',
-                album            TEXT NOT NULL DEFAULT '',
-                art_path         TEXT NOT NULL DEFAULT '',
-                split_points_ms  TEXT NOT NULL DEFAULT ''
-            );
-        """)
-        # Migrate: add split_points_ms to existing DBs that predate this column
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
+# Bootstrap
+_migrate_legacy_sqlite()
+Base.metadata.create_all(bind=engine)
+# Ensure files.split_points_ms column exists if DB was created before that field
+try:
+    with engine.connect() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(files)")).fetchall()]
         if "split_points_ms" not in cols:
-            conn.execute("ALTER TABLE files ADD COLUMN split_points_ms TEXT NOT NULL DEFAULT ''")
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS segments (
-                segment_id  TEXT PRIMARY KEY,
-                file_id     TEXT NOT NULL,
-                idx         INTEGER NOT NULL,
-                start_ms    INTEGER NOT NULL,
-                end_ms      INTEGER NOT NULL,
-                path        TEXT NOT NULL,
-                title       TEXT NOT NULL DEFAULT '',
-                artist      TEXT NOT NULL DEFAULT '',
-                album       TEXT NOT NULL DEFAULT '',
-                track       TEXT NOT NULL DEFAULT '',
-                year        TEXT NOT NULL DEFAULT '',
-                genre       TEXT NOT NULL DEFAULT '',
-                lyrics      TEXT NOT NULL DEFAULT '',
-                art_path    TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY (file_id) REFERENCES files(file_id)
-            );
-        """)
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS drafts (
-                file_id     TEXT NOT NULL,
-                idx         INTEGER NOT NULL,
-                start_ms    INTEGER NOT NULL DEFAULT 0,
-                end_ms      INTEGER NOT NULL DEFAULT 0,
-                title       TEXT NOT NULL DEFAULT '',
-                artist      TEXT NOT NULL DEFAULT '',
-                album       TEXT NOT NULL DEFAULT '',
-                track       TEXT NOT NULL DEFAULT '',
-                year        TEXT NOT NULL DEFAULT '',
-                genre       TEXT NOT NULL DEFAULT '',
-                lyrics      TEXT NOT NULL DEFAULT '',
-                art_path    TEXT NOT NULL DEFAULT '',
-                expanded    INTEGER NOT NULL DEFAULT 1,
-                PRIMARY KEY (file_id, idx),
-                FOREIGN KEY (file_id) REFERENCES files(file_id)
-            );
-        """)
-        # Migrate drafts: add start_ms/end_ms if missing
-        dcols = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
-        if "start_ms" not in dcols:
-            conn.execute("ALTER TABLE drafts ADD COLUMN start_ms INTEGER NOT NULL DEFAULT 0")
-        if "end_ms" not in dcols:
-            conn.execute("ALTER TABLE drafts ADD COLUMN end_ms INTEGER NOT NULL DEFAULT 0")
-        if "expanded" not in dcols:
-            conn.execute("ALTER TABLE drafts ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1")
+            conn.execute(text("ALTER TABLE files ADD COLUMN split_points_ms TEXT NOT NULL DEFAULT ''"))
+            conn.commit()
+        # tracks expanded column check
+        cols_t = [r[1] for r in conn.execute(text("PRAGMA table_info(tracks)")).fetchall()]
+        if "expanded" not in cols_t:
+            conn.execute(text("ALTER TABLE tracks ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1"))
+            conn.commit()
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-_init_db()
+def _row_to_file(r: FileRow) -> FileMeta:
+    return FileMeta(
+        file_id=r.file_id,
+        original_name=r.original_name,
+        path=r.path,
+        duration_ms=r.duration_ms,
+        title=r.title or "",
+        artist=r.artist or "",
+        album=r.album or "",
+        art_path=r.art_path or "",
+        split_points_ms=r.split_points_ms or "",
+    )
+
+
+def _row_to_track(r: TrackRow) -> TrackMeta:
+    return TrackMeta(
+        track_id=r.track_id,
+        file_id=r.file_id,
+        idx=r.idx,
+        start_ms=r.start_ms,
+        end_ms=r.end_ms,
+        path=r.path or "",
+        title=r.title or "",
+        artist=r.artist or "",
+        album=r.album or "",
+        track=r.track or "",
+        year=r.year or "",
+        genre=r.genre or "",
+        lyrics=r.lyrics or "",
+        art_path=r.art_path or "",
+        expanded=int(r.expanded) if r.expanded is not None else 1,
+    )
+
+
+def _track_to_seg(t: TrackMeta) -> SegmentMeta:
+    return SegmentMeta(
+        segment_id=t["track_id"],
+        file_id=t["file_id"],
+        index=t["idx"],
+        start_ms=t["start_ms"],
+        end_ms=t["end_ms"],
+        path=t["path"],
+        title=t["title"],
+        artist=t["artist"],
+        album=t["album"],
+        track=t["track"],
+        year=t["year"],
+        genre=t["genre"],
+        lyrics=t["lyrics"],
+        art_path=t["art_path"],
+    )
+
+
+def _track_to_draft(t: TrackMeta) -> DraftMeta:
+    return DraftMeta(
+        file_id=t["file_id"],
+        idx=t["idx"],
+        start_ms=t["start_ms"],
+        end_ms=t["end_ms"],
+        title=t["title"],
+        artist=t["artist"],
+        album=t["album"],
+        track=t["track"],
+        year=t["year"],
+        genre=t["genre"],
+        lyrics=t["lyrics"],
+        art_path=t["art_path"],
+        expanded=int(t["expanded"]),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Dict-like proxies — drop-in replacement for the old plain dicts
+# Proxies
 # ---------------------------------------------------------------------------
 
 
 class _FilesProxy:
-    """Behaves like dict[str, FileMeta] but reads/writes SQLite."""
-
     def get(self, file_id: str) -> FileMeta | None:
-        with _db() as conn:
-            row = conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
-        return _row_to_file(row) if row else None
+        with SessionLocal() as s:
+            row = s.get(FileRow, file_id)
+            return _row_to_file(row) if row else None
 
     def __getitem__(self, file_id: str) -> FileMeta:
-        result = self.get(file_id)
-        if result is None:
+        v = self.get(file_id)
+        if v is None:
             raise KeyError(file_id)
-        return result
+        return v
 
     def __setitem__(self, file_id: str, meta: FileMeta) -> None:
-        with _db() as conn:
-            conn.execute(
-                """
-                INSERT INTO files (file_id, original_name, path, duration_ms,
-                                   title, artist, album, art_path, split_points_ms)
-                VALUES (:file_id, :original_name, :path, :duration_ms,
-                        :title, :artist, :album, :art_path, :split_points_ms)
-                ON CONFLICT(file_id) DO UPDATE SET
-                    original_name    = excluded.original_name,
-                    path             = excluded.path,
-                    duration_ms      = excluded.duration_ms,
-                    title            = excluded.title,
-                    artist           = excluded.artist,
-                    album            = excluded.album,
-                    art_path         = excluded.art_path,
-                    split_points_ms  = excluded.split_points_ms
-            """,
-                meta,
-            )
+        with SessionLocal() as s:
+            row = s.get(FileRow, file_id)
+            if row:
+                row.original_name = meta["original_name"]
+                row.path = meta["path"]
+                row.duration_ms = meta["duration_ms"]
+                row.title = meta["title"]
+                row.artist = meta["artist"]
+                row.album = meta["album"]
+                row.art_path = meta["art_path"]
+                row.split_points_ms = meta.get("split_points_ms", "") or ""
+            else:
+                row = FileRow(
+                    file_id=meta["file_id"],
+                    original_name=meta["original_name"],
+                    path=meta["path"],
+                    duration_ms=meta["duration_ms"],
+                    title=meta["title"],
+                    artist=meta["artist"],
+                    album=meta["album"],
+                    art_path=meta["art_path"],
+                    split_points_ms=meta.get("split_points_ms", "") or "",
+                )
+                s.add(row)
+            s.commit()
 
     def __contains__(self, file_id: object) -> bool:
         return self.get(str(file_id)) is not None
@@ -221,219 +434,292 @@ class _FilesProxy:
     def save_split_points(self, file_id: str, points: list[int]) -> None:
         import json
 
-        with _db() as conn:
-            conn.execute(
-                "UPDATE files SET split_points_ms = ? WHERE file_id = ?",
-                (json.dumps(points), file_id),
-            )
+        with SessionLocal() as s:
+            row = s.get(FileRow, file_id)
+            if row:
+                row.split_points_ms = json.dumps(points)
+                s.commit()
 
     def delete(self, file_id: str) -> None:
-        with _db() as conn:
-            conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
+        with SessionLocal() as s:
+            row = s.get(FileRow, file_id)
+            if row:
+                s.delete(row)
+                s.commit()
 
     def items(self) -> list[tuple[str, FileMeta]]:
-        with _db() as conn:
-            rows = conn.execute("SELECT * FROM files").fetchall()
-        return [(_row_to_file(r)["file_id"], _row_to_file(r)) for r in rows]
+        with SessionLocal() as s:
+            rows = s.execute(select(FileRow)).scalars().all()
+            return [(r.file_id, _row_to_file(r)) for r in rows]
+
+
+class _TracksProxy:
+    """Unified tracks table."""
+
+    def get(self, track_id: str) -> TrackMeta | None:
+        with SessionLocal() as s:
+            row = s.get(TrackRow, track_id)
+            return _row_to_track(row) if row else None
+
+    def get_by_file_idx(self, file_id: str, idx: int) -> TrackMeta | None:
+        with SessionLocal() as s:
+            row = s.execute(select(TrackRow).where(TrackRow.file_id == file_id, TrackRow.idx == idx)).scalar_one_or_none()
+            return _row_to_track(row) if row else None
+
+    def by_file(self, file_id: str) -> list[TrackMeta]:
+        with SessionLocal() as s:
+            rows = s.execute(select(TrackRow).where(TrackRow.file_id == file_id).order_by(TrackRow.idx)).scalars().all()
+            return [_row_to_track(r) for r in rows]
+
+    def upsert(self, meta: TrackMeta) -> None:
+        with SessionLocal() as s:
+            row = s.get(TrackRow, meta["track_id"])
+            if row:
+                row.file_id = meta["file_id"]
+                row.idx = meta["idx"]
+                row.start_ms = meta["start_ms"]
+                row.end_ms = meta["end_ms"]
+                row.path = meta["path"]
+                row.title = meta["title"]
+                row.artist = meta["artist"]
+                row.album = meta["album"]
+                row.track = meta["track"]
+                row.year = meta["year"]
+                row.genre = meta["genre"]
+                row.lyrics = meta["lyrics"]
+                row.art_path = meta["art_path"]
+                row.expanded = meta["expanded"]
+            else:
+                # also handle unique (file_id, idx) conflict - update that row
+                existing = s.execute(select(TrackRow).where(TrackRow.file_id == meta["file_id"], TrackRow.idx == meta["idx"])).scalar_one_or_none()
+                if existing:
+                    existing.track_id = meta["track_id"]  # keep new id? or keep old? we update in place
+                    # Actually keep existing track_id to preserve FK; use meta's id only if no conflict
+                    # Prefer existing id - update fields
+                    existing.start_ms = meta["start_ms"]
+                    existing.end_ms = meta["end_ms"]
+                    existing.path = meta["path"]
+                    existing.title = meta["title"]
+                    existing.artist = meta["artist"]
+                    existing.album = meta["album"]
+                    existing.track = meta["track"]
+                    existing.year = meta["year"]
+                    existing.genre = meta["genre"]
+                    existing.lyrics = meta["lyrics"]
+                    existing.art_path = meta["art_path"]
+                    existing.expanded = meta["expanded"]
+                else:
+                    row = TrackRow(
+                        track_id=meta["track_id"],
+                        file_id=meta["file_id"],
+                        idx=meta["idx"],
+                        start_ms=meta["start_ms"],
+                        end_ms=meta["end_ms"],
+                        path=meta["path"],
+                        title=meta["title"],
+                        artist=meta["artist"],
+                        album=meta["album"],
+                        track=meta["track"],
+                        year=meta["year"],
+                        genre=meta["genre"],
+                        lyrics=meta["lyrics"],
+                        art_path=meta["art_path"],
+                        expanded=meta["expanded"],
+                    )
+                    s.add(row)
+            s.commit()
+
+    def update_fields(self, track_id: str, **kwargs: str | int) -> None:
+        if not kwargs:
+            return
+        with SessionLocal() as s:
+            row = s.get(TrackRow, track_id)
+            if not row:
+                return
+            for k, v in kwargs.items():
+                # map index alias
+                if k == "index":
+                    k = "idx"
+                if hasattr(row, k):
+                    setattr(row, k, v)
+            s.commit()
+
+    def delete(self, track_id: str) -> None:
+        with SessionLocal() as s:
+            row = s.get(TrackRow, track_id)
+            if row:
+                s.delete(row)
+                s.commit()
+
+    def delete_by_file(self, file_id: str) -> None:
+        with SessionLocal() as s:
+            rows = s.execute(select(TrackRow).where(TrackRow.file_id == file_id)).scalars().all()
+            for r in rows:
+                s.delete(r)
+            s.commit()
 
 
 class _SegmentsProxy:
-    """Behaves like dict[str, SegmentMeta] but reads/writes SQLite."""
+    """Compatibility shim: segments are tracks where path != ''."""
 
     def get(self, segment_id: str) -> SegmentMeta | None:
-        with _db() as conn:
-            row = conn.execute(
-                "SELECT * FROM segments WHERE segment_id = ?", (segment_id,)
-            ).fetchone()
-        return _row_to_seg(row) if row else None
+        t = tracks.get(segment_id)
+        if t and t["path"]:
+            return _track_to_seg(t)
+        # also allow fetching draft tracks as segments for compat? No
+        # If track exists but not sliced, return None to signal not found
+        if t and not t["path"]:
+            return None
+        return None
 
     def __getitem__(self, segment_id: str) -> SegmentMeta:
-        result = self.get(segment_id)
-        if result is None:
+        v = self.get(segment_id)
+        if v is None:
             raise KeyError(segment_id)
-        return result
+        return v
 
     def __setitem__(self, segment_id: str, seg: SegmentMeta) -> None:
-        with _db() as conn:
-            conn.execute(
-                """
-                INSERT INTO segments
-                    (segment_id, file_id, idx, start_ms, end_ms, path,
-                     title, artist, album, track, year, genre, lyrics, art_path)
-                VALUES
-                    (:segment_id, :file_id, :index, :start_ms, :end_ms, :path,
-                     :title, :artist, :album, :track, :year, :genre, :lyrics, :art_path)
-                ON CONFLICT(segment_id) DO UPDATE SET
-                    file_id   = excluded.file_id,
-                    idx       = excluded.idx,
-                    start_ms  = excluded.start_ms,
-                    end_ms    = excluded.end_ms,
-                    path      = excluded.path,
-                    title     = excluded.title,
-                    artist    = excluded.artist,
-                    album     = excluded.album,
-                    track     = excluded.track,
-                    year      = excluded.year,
-                    genre     = excluded.genre,
-                    lyrics    = excluded.lyrics,
-                    art_path  = excluded.art_path
-            """,
-                seg,
-            )
+        # Upsert as track with path
+        meta: TrackMeta = {
+            "track_id": seg["segment_id"],
+            "file_id": seg["file_id"],
+            "idx": seg["index"],
+            "start_ms": seg["start_ms"],
+            "end_ms": seg["end_ms"],
+            "path": seg["path"],
+            "title": seg["title"],
+            "artist": seg["artist"],
+            "album": seg["album"],
+            "track": seg["track"],
+            "year": seg["year"],
+            "genre": seg["genre"],
+            "lyrics": seg["lyrics"],
+            "art_path": seg["art_path"],
+            "expanded": 1,
+        }
+        tracks.upsert(meta)
 
     def __delitem__(self, segment_id: str) -> None:
-        with _db() as conn:
-            conn.execute("DELETE FROM segments WHERE segment_id = ?", (segment_id,))
+        tracks.delete(segment_id)
 
     def __contains__(self, segment_id: object) -> bool:
         return self.get(str(segment_id)) is not None
 
     def items(self) -> list[tuple[str, SegmentMeta]]:
-        with _db() as conn:
-            rows = conn.execute("SELECT * FROM segments").fetchall()
-        return [(r["segment_id"], _row_to_seg(r)) for r in rows]
+        return [(t["track_id"], _track_to_seg(t)) for t in tracks.by_file_sliced_all()]
 
     def values(self) -> list[SegmentMeta]:
-        with _db() as conn:
-            rows = conn.execute("SELECT * FROM segments").fetchall()
-        return [_row_to_seg(r) for r in rows]
+        return [_track_to_seg(t) for t in tracks.by_file_sliced_all()]
 
     def by_file(self, file_id: str) -> list[SegmentMeta]:
-        with _db() as conn:
-            rows = conn.execute(
-                "SELECT * FROM segments WHERE file_id = ? ORDER BY idx", (file_id,)
-            ).fetchall()
-        return [_row_to_seg(r) for r in rows]
+        return [_track_to_seg(t) for t in tracks.by_file(file_id) if t["path"]]
 
     def delete_by_file(self, file_id: str) -> None:
-        with _db() as conn:
-            conn.execute("DELETE FROM segments WHERE file_id = ?", (file_id,))
+        # Only delete sliced tracks; drafts remain unless explicitly cleared
+        # For legacy behavior, delete all tracks (both sliced and unsliced) is handled by drafts proxy separately
+        # Here we delete sliced ones
+        with SessionLocal() as s:
+            rows = s.execute(select(TrackRow).where(TrackRow.file_id == file_id, TrackRow.path != "")).scalars().all()
+            for r in rows:
+                s.delete(r)
+            s.commit()
 
     def update_fields(self, segment_id: str, **kwargs: str | int) -> None:
-        """Patch arbitrary fields in-place without a full round-trip."""
-        if not kwargs:
-            return
-        cols = ", ".join(f"{k} = :{k}" for k in kwargs)
-        kwargs["segment_id"] = segment_id
-        with _db() as conn:
-            conn.execute(
-                f"UPDATE segments SET {cols} WHERE segment_id = :segment_id",
-                kwargs,
-            )
+        # Map index -> idx
+        if "index" in kwargs:
+            kwargs["idx"] = kwargs.pop("index")  # type: ignore
+        tracks.update_fields(segment_id, **kwargs)
 
 
-def _row_to_file(row: sqlite3.Row) -> FileMeta:
-    return FileMeta(
-        file_id=row["file_id"],
-        original_name=row["original_name"],
-        path=row["path"],
-        duration_ms=row["duration_ms"],
-        title=row["title"],
-        artist=row["artist"],
-        album=row["album"],
-        art_path=row["art_path"],
-        split_points_ms=row["split_points_ms"] if row["split_points_ms"] else "",
-    )
+# Extend _TracksProxy with helpers used by segments shim
+def _tracks_by_file_sliced_all(self: _TracksProxy) -> list[TrackMeta]:
+    with SessionLocal() as s:
+        rows = s.execute(select(TrackRow).where(TrackRow.path != "")).scalars().all()
+        return [_row_to_track(r) for r in rows]
 
-
-def _row_to_seg(row: sqlite3.Row) -> SegmentMeta:
-    return SegmentMeta(
-        segment_id=row["segment_id"],
-        file_id=row["file_id"],
-        index=row["idx"],
-        start_ms=row["start_ms"],
-        end_ms=row["end_ms"],
-        path=row["path"],
-        title=row["title"],
-        artist=row["artist"],
-        album=row["album"],
-        track=row["track"],
-        year=row["year"],
-        genre=row["genre"],
-        lyrics=row["lyrics"],
-        art_path=row["art_path"],
-    )
-
-
-def _row_to_draft(row: sqlite3.Row) -> DraftMeta:
-    return DraftMeta(
-        file_id=row["file_id"],
-        idx=row["idx"],
-        start_ms=row["start_ms"],
-        end_ms=row["end_ms"],
-        title=row["title"],
-        artist=row["artist"],
-        album=row["album"],
-        track=row["track"],
-        year=row["year"],
-        genre=row["genre"],
-        lyrics=row["lyrics"],
-        art_path=row["art_path"],
-        expanded=int(row["expanded"]) if "expanded" in row.keys() and row["expanded"] is not None else 1,  # noqa: SIM118
-    )
+_TracksProxy.by_file_sliced_all = _tracks_by_file_sliced_all  # type: ignore
 
 
 class _DraftsProxy:
+    """Compatibility shim: drafts are tracks where idx matches or unsliced."""
+
     def get(self, file_id: str, idx: int) -> DraftMeta | None:
-        with _db() as conn:
-            row = conn.execute("SELECT * FROM drafts WHERE file_id = ? AND idx = ?", (file_id, idx)).fetchone()
-        return _row_to_draft(row) if row else None
+        t = tracks.get_by_file_idx(file_id, idx)
+        if t:
+            return _track_to_draft(t)
+        return None
 
     def by_file(self, file_id: str) -> list[DraftMeta]:
-        with _db() as conn:
-            rows = conn.execute("SELECT * FROM drafts WHERE file_id = ? ORDER BY idx", (file_id,)).fetchall()
-        return [_row_to_draft(r) for r in rows]
+        return [_track_to_draft(t) for t in tracks.by_file(file_id)]
 
     def upsert(self, draft: DraftMeta) -> None:
-        with _db() as conn:
-            conn.execute(
-                """
-                INSERT INTO drafts (file_id, idx, start_ms, end_ms, title, artist, album, track, year, genre, lyrics, art_path, expanded)
-                VALUES (:file_id, :idx, :start_ms, :end_ms, :title, :artist, :album, :track, :year, :genre, :lyrics, :art_path, :expanded)
-                ON CONFLICT(file_id, idx) DO UPDATE SET
-                    start_ms = excluded.start_ms,
-                    end_ms   = excluded.end_ms,
-                    title    = excluded.title,
-                    artist   = excluded.artist,
-                    album    = excluded.album,
-                    track    = excluded.track,
-                    year     = excluded.year,
-                    genre    = excluded.genre,
-                    lyrics   = excluded.lyrics,
-                    art_path = excluded.art_path,
-                    expanded = excluded.expanded
-                """,
-                draft,
-            )
+        # If a track exists for this idx, update it; else create new track with empty path
+        existing = tracks.get_by_file_idx(draft["file_id"], draft["idx"])
+        track_id = existing["track_id"] if existing else uuid.uuid4().hex
+        meta: TrackMeta = {
+            "track_id": track_id,
+            "file_id": draft["file_id"],
+            "idx": draft["idx"],
+            "start_ms": draft["start_ms"],
+            "end_ms": draft["end_ms"],
+            "path": existing["path"] if existing else "",
+            "title": draft["title"],
+            "artist": draft["artist"],
+            "album": draft["album"],
+            "track": draft["track"],
+            "year": draft["year"],
+            "genre": draft["genre"],
+            "lyrics": draft["lyrics"],
+            "art_path": draft["art_path"],
+            "expanded": draft["expanded"],
+        }
+        tracks.upsert(meta)
 
     def update_fields(self, file_id: str, idx: int, **kwargs: str | int) -> None:
-        if not kwargs:
-            return
-        # ensure row exists
-        existing = self.get(file_id, idx)
+        existing = tracks.get_by_file_idx(file_id, idx)
         if not existing:
-            # create empty draft with defaults then patch
             base: DraftMeta = {
-                "file_id": file_id, "idx": idx, "start_ms": 0, "end_ms": 0,
-                "title": "", "artist": "", "album": "", "track": str(idx + 1),
-                "year": "", "genre": "", "lyrics": "", "art_path": "", "expanded": 1,
+                "file_id": file_id,
+                "idx": idx,
+                "start_ms": 0,
+                "end_ms": 0,
+                "title": "",
+                "artist": "",
+                "album": "",
+                "track": str(idx + 1),
+                "year": "",
+                "genre": "",
+                "lyrics": "",
+                "art_path": "",
+                "expanded": 1,
             }
             base.update(kwargs)  # type: ignore
             self.upsert(base)
             return
-        cols = ", ".join(f"{k} = :{k}" for k in kwargs)
-        kwargs["file_id"] = file_id
-        kwargs["idx"] = idx
-        with _db() as conn:
-            conn.execute(f"UPDATE drafts SET {cols} WHERE file_id = :file_id AND idx = :idx", kwargs)
+        # Map to track update
+        # expanded bool -> int handled by caller; ensure int
+        track_kwargs: dict[str, str | int] = {}
+        for k, v in kwargs.items():
+            track_kwargs[k] = v
+        tracks.update_fields(existing["track_id"], **track_kwargs)
 
     def delete_by_file(self, file_id: str) -> None:
-        with _db() as conn:
-            conn.execute("DELETE FROM drafts WHERE file_id = ?", (file_id,))
+        # For legacy split.apply flow that cleared drafts after slicing,
+        # we should NOT delete sliced tracks.  Only delete unsliced ones
+        # To preserve legacy semantics (delete all drafts), we delete tracks where path == ""
+        with SessionLocal() as s:
+            rows = s.execute(select(TrackRow).where(TrackRow.file_id == file_id, TrackRow.path == "")).scalars().all()
+            for r in rows:
+                s.delete(r)
+            s.commit()
 
     def delete_one(self, file_id: str, idx: int) -> None:
-        with _db() as conn:
-            conn.execute("DELETE FROM drafts WHERE file_id = ? AND idx = ?", (file_id, idx))
+        t = tracks.get_by_file_idx(file_id, idx)
+        if t:
+            # Only delete if unsliced; if sliced, this is a draft leftover - delete it
+            # For sliced tracks, deletion is handled by segment delete
+            if not t["path"]:
+                tracks.delete(t["track_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +727,7 @@ class _DraftsProxy:
 # ---------------------------------------------------------------------------
 
 files: _FilesProxy = _FilesProxy()
+tracks: _TracksProxy = _TracksProxy()
 segments: _SegmentsProxy = _SegmentsProxy()
 drafts: _DraftsProxy = _DraftsProxy()
 
@@ -450,6 +737,21 @@ def new_id() -> str:
 
 
 def file_dir(file_id: str) -> Path:
-    d = TEMP_DIR / file_id
+    d = DATA_DIR / file_id
+    # Migrate legacy audio dir if needed
+    if not d.exists():
+        try:
+            _legacy_state_file = Path(tempfile.gettempdir()) / "split_music_dir.txt"
+            if _legacy_state_file.exists():
+                _legacy_dir = Path(_legacy_state_file.read_text().strip())
+                _legacy_file_dir = _legacy_dir / file_id
+                if _legacy_file_dir.exists():
+                    import shutil
+
+                    shutil.copytree(_legacy_file_dir, d, dirs_exist_ok=True)
+                    # keep legacy for fallback
+                    return d
+        except Exception:
+            pass
     d.mkdir(parents=True, exist_ok=True)
     return d

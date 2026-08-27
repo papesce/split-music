@@ -4,6 +4,7 @@ import type { SegmentMeta } from '@/types'
 import { getSegment } from '@/api'
 import { TrackEditor } from '@/components/TrackEditor'
 import { listDrafts, patchDraft } from '@/api'
+import { queryKeys } from '@/api/queryKeys'
 
 type DeleteMode = 'mergePrev' | 'mergeNext' | 'discard'
 
@@ -27,7 +28,7 @@ export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsC
   const trackCount = splitPoints.length - 1
   const isFocused = focusedIndex !== null && focusedIndex !== undefined
 
-  const { data: drafts } = useQuery({ queryKey: ['drafts', fileId], queryFn: () => listDrafts(fileId) })
+  const { data: drafts } = useQuery({ queryKey: queryKeys.drafts(fileId), queryFn: () => listDrafts(fileId) })
 
   const [selected, setSelected] = useState<Set<number>>(() => new Set(Array.from({ length: trackCount }, (_, i) => i)))
   useEffect(() => { setSelected(new Set(Array.from({ length: trackCount }, (_, i) => i))) }, [trackCount])
@@ -56,15 +57,15 @@ export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsC
   const handleCollapseAll = useCallback(() => {
     setCollapseSignal((n) => n + 1)
     for (let i = 0; i < trackCount; i++) patchDraft(fileId, i, { expanded: false } as Partial<import('@/types').DraftState>).catch(() => {})
-    qc.setQueryData(['drafts', fileId], (old: import('@/types').DraftState[] | undefined) => old?.map((d) => ({ ...d, expanded: false })))
+    qc.setQueryData(queryKeys.drafts(fileId), (old: import('@/types').DraftState[] | undefined) => old?.map((d) => ({ ...d, expanded: false })))
   }, [fileId, trackCount, qc])
 
   const collectSegments = useCallback((map: Map<number, string>): Promise<SegmentMeta[]> => Promise.all(Array.from(map.values()).map((sid) => getSegment(sid))), [])
 
   const handleRowSplit = useCallback(async (index: number, segmentId: string) => {
     setSplitMap((prev) => { const next = new Map(prev).set(index, segmentId); collectSegments(next).then(onSplitComplete); return next })
-    qc.invalidateQueries({ queryKey: ['drafts', fileId] })
-    qc.invalidateQueries({ queryKey: ['draft', fileId, index] })
+    qc.invalidateQueries({ queryKey: queryKeys.drafts(fileId) })
+    qc.invalidateQueries({ queryKey: queryKeys.draft(fileId, index) })
   }, [collectSegments, onSplitComplete, qc, fileId])
 
   const handleRowUnclipped = useCallback((index: number) => {
@@ -74,8 +75,8 @@ export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsC
       collectSegments(next).then(onSplitComplete).catch(() => {})
       return next
     })
-    qc.invalidateQueries({ queryKey: ['drafts', fileId] })
-    qc.invalidateQueries({ queryKey: ['draft', fileId, index] })
+    qc.invalidateQueries({ queryKey: queryKeys.drafts(fileId) })
+    qc.invalidateQueries({ queryKey: queryKeys.draft(fileId, index) })
   }, [collectSegments, onSplitComplete, qc, fileId])
 
   const handleSplitTrack = useCallback((index: number) => {
