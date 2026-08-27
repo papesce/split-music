@@ -72,7 +72,19 @@ export default function App() {
     return () => ro.disconnect()
   }, [session.stage])
 
+  const handleEnterFocus = useCallback((idx: number) => {
+    // audio source swaps (full file -> focused segment preview/segment audio)
+    // – stop any list-bound playback so we don't show a phantom "playing" row
+    waveformRef.current?.pause()
+    pendingPlayRef.current = null
+    setPlayingTrack(null)
+    session.setFocusedIndex(idx)
+  }, [session])
+
   const handleExitFocus = useCallback(() => {
+    waveformRef.current?.pause()
+    pendingPlayRef.current = null
+    setPlayingTrack(null)
     session.setFocusedIndex(null)
     waveformRef.current?.resetZoom()
   }, [session])
@@ -116,8 +128,17 @@ export default function App() {
   const splittableCount = session.splitPoints.length > 1 ? session.splitPoints.length - 1 : 0
   const waveformReady = !!waveformRef.current?.isReady?.()
 
-  // clear playing on stage/file change and stale index
+  // clear playing on stage/file change, focus change, and stale index
   useEffect(() => { setPlayingTrack(null); pendingPlayRef.current = null }, [session.upload?.file_id, session.stage])
+  const prevFocusedRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (prevFocusedRef.current !== session.focusedIndex) {
+      waveformRef.current?.pause()
+      pendingPlayRef.current = null
+      setPlayingTrack(null)
+      prevFocusedRef.current = session.focusedIndex
+    }
+  }, [session.focusedIndex])
   useEffect(() => {
     if (playingTrack !== null && playingTrack >= splittableCount) { setPlayingTrack(null); pendingPlayRef.current = null }
   }, [splittableCount, playingTrack])
@@ -309,7 +330,7 @@ export default function App() {
               const m = new Map(segs.map((s) => [s.index, s.segment_id]))
               session.setSplitMap(m)
             }}
-            onFocusTrack={(idx) => session.setFocusedIndex(idx)}
+            onFocusTrack={handleEnterFocus}
             focusedIndex={session.focusedIndex}
             onExitFocus={handleExitFocus}
           />
