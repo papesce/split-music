@@ -81,6 +81,7 @@ class DraftMeta(TypedDict):
     genre: str
     lyrics: str
     art_path: str
+    expanded: int  # 1 = expanded, 0 = collapsed
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,7 @@ def _init_db() -> None:
                 genre       TEXT NOT NULL DEFAULT '',
                 lyrics      TEXT NOT NULL DEFAULT '',
                 art_path    TEXT NOT NULL DEFAULT '',
+                expanded    INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (file_id, idx),
                 FOREIGN KEY (file_id) REFERENCES files(file_id)
             );
@@ -166,6 +168,8 @@ def _init_db() -> None:
             conn.execute("ALTER TABLE drafts ADD COLUMN start_ms INTEGER NOT NULL DEFAULT 0")
         if "end_ms" not in dcols:
             conn.execute("ALTER TABLE drafts ADD COLUMN end_ms INTEGER NOT NULL DEFAULT 0")
+        if "expanded" not in dcols:
+            conn.execute("ALTER TABLE drafts ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1")
 
 
 _init_db()
@@ -365,6 +369,7 @@ def _row_to_draft(row: sqlite3.Row) -> DraftMeta:
         genre=row["genre"],
         lyrics=row["lyrics"],
         art_path=row["art_path"],
+        expanded=int(row["expanded"]) if "expanded" in row.keys() and row["expanded"] is not None else 1,  # noqa: SIM118
     )
 
 
@@ -383,8 +388,8 @@ class _DraftsProxy:
         with _db() as conn:
             conn.execute(
                 """
-                INSERT INTO drafts (file_id, idx, start_ms, end_ms, title, artist, album, track, year, genre, lyrics, art_path)
-                VALUES (:file_id, :idx, :start_ms, :end_ms, :title, :artist, :album, :track, :year, :genre, :lyrics, :art_path)
+                INSERT INTO drafts (file_id, idx, start_ms, end_ms, title, artist, album, track, year, genre, lyrics, art_path, expanded)
+                VALUES (:file_id, :idx, :start_ms, :end_ms, :title, :artist, :album, :track, :year, :genre, :lyrics, :art_path, :expanded)
                 ON CONFLICT(file_id, idx) DO UPDATE SET
                     start_ms = excluded.start_ms,
                     end_ms   = excluded.end_ms,
@@ -395,7 +400,8 @@ class _DraftsProxy:
                     year     = excluded.year,
                     genre    = excluded.genre,
                     lyrics   = excluded.lyrics,
-                    art_path = excluded.art_path
+                    art_path = excluded.art_path,
+                    expanded = excluded.expanded
                 """,
                 draft,
             )
@@ -410,7 +416,7 @@ class _DraftsProxy:
             base: DraftMeta = {
                 "file_id": file_id, "idx": idx, "start_ms": 0, "end_ms": 0,
                 "title": "", "artist": "", "album": "", "track": str(idx + 1),
-                "year": "", "genre": "", "lyrics": "", "art_path": "",
+                "year": "", "genre": "", "lyrics": "", "art_path": "", "expanded": 1,
             }
             base.update(kwargs)  # type: ignore
             self.upsert(base)

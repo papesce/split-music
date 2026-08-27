@@ -2,11 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import type { SegmentMeta } from '@/types'
 import type { SuggestPasteResult, LyricsResult } from '@/types'
-import { updateSegment, uploadArt, transcribeSegment, suggestFromLyrics, fetchLyricsForSegment } from '@/api'
+import { updateSegment, uploadArt, transcribeSegment, suggestFromLyrics, fetchLyricsForSegment, suggestLyricsFromSegment } from '@/api'
 import { segmentArtUrl } from '@/api'
 import { TRACK_FIELDS } from '@/utils/trackUtils'
 import { formatLyrics } from '@/utils/lyrics'
 import { SuggestModal } from '@/components/SuggestModal'
+import { LyricsSearchModal } from '@/components/LyricsSearchModal'
 
 interface Props {
   segmentId: string
@@ -199,6 +200,7 @@ export function TrackMetadataEditor({
 }: Props) {
   const qc = useQueryClient()
   const [suggestPrompt, setSuggestPrompt] = useState<string | null>(null)
+  const [lyricsSearchPrompt, setLyricsSearchPrompt] = useState<string | null>(null)
   const [lyricsResult, setLyricsResult] = useState<LyricsResult | null>(null)
   const [lyricsError, setLyricsError] = useState('')
   const [lyricsErrorDetails, setLyricsErrorDetails] = useState<{
@@ -253,6 +255,17 @@ export function TrackMetadataEditor({
   const suggestMutation = useMutation({
     mutationFn: () => suggestFromLyrics(segmentId),
     onSuccess: (result) => setSuggestPrompt(result.prompt),
+  })
+
+  const lyricsSearchMutation = useMutation({
+    mutationFn: () => suggestLyricsFromSegment(segmentId),
+    onSuccess: (prompt) => setLyricsSearchPrompt(prompt),
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      // fallback: surface via lyricsError if available
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      setLyricsError(axiosErr?.response?.data?.detail ?? msg)
+    },
   })
 
   const lyricsFetchMutation = useMutation({
@@ -341,6 +354,18 @@ export function TrackMetadataEditor({
           prompt={suggestPrompt}
           onApply={applyPasteResult}
           onClose={() => setSuggestPrompt(null)}
+        />
+      )}
+      {lyricsSearchPrompt !== null && (
+        <LyricsSearchModal
+          prompt={lyricsSearchPrompt}
+          onClose={() => setLyricsSearchPrompt(null)}
+          onApply={(formatted) => {
+            onLyricsChange(formatted)
+            qc.setQueryData(['segment', segmentId], (old: SegmentMeta) => ({ ...(old as SegmentMeta), lyrics: formatted }))
+            saveMutation.mutate({ lyrics: formatted })
+            setLyricsSearchPrompt(null)
+          }}
         />
       )}
       {lyricsResult && (
@@ -493,6 +518,14 @@ export function TrackMetadataEditor({
             Lyrics
           </span>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => lyricsSearchMutation.mutate()}
+              disabled={lyricsSearchMutation.isPending || !fields.title.trim() || !fields.artist.trim()}
+              title={!fields.title.trim() || !fields.artist.trim() ? 'Enter title and artist first' : 'Copy prompt to search lyrics via ChatGPT'}
+              className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+            >
+              {lyricsSearchMutation.isPending ? 'Building…' : '✦ Search lyrics'}
+            </button>
             <button
               onClick={() => setFormatOpen(true)}
               title="Paste raw lyrics and normalize formatting (preserves line breaks)"

@@ -44,6 +44,7 @@ class DraftState(BaseModel):
     genre: str
     lyrics: str
     has_art: bool
+    expanded: bool = True
 
 
 class FileStateResponse(BaseModel):
@@ -137,6 +138,7 @@ def get_file_state(file_id: str) -> FileStateResponse:
             genre=d["genre"],
             lyrics=d["lyrics"],
             has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+            expanded=bool(d.get("expanded", 1)),
         )
         for d in drafts
     ]
@@ -187,6 +189,7 @@ class DraftPatch(BaseModel):
     lyrics: str | None = None
     start_ms: int | None = None
     end_ms: int | None = None
+    expanded: bool | None = None
 
 
 @router.get("/{file_id}/drafts", response_model=list[DraftState])
@@ -200,6 +203,7 @@ def list_drafts(file_id: str) -> list[DraftState]:
             title=d["title"], artist=d["artist"], album=d["album"],
             track=d["track"], year=d["year"], genre=d["genre"],
             lyrics=d["lyrics"], has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+            expanded=bool(d.get("expanded", 1)),
         )
         for d in drafts
     ]
@@ -209,7 +213,16 @@ def list_drafts(file_id: str) -> list[DraftState]:
 def patch_draft(file_id: str, idx: int, req: DraftPatch) -> DraftState:
     if file_id not in store.files:
         raise HTTPException(status_code=404, detail=f"file_id '{file_id}' not found.")
-    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    # Convert bool expanded to int for SQLite; keep other fields as-is
+    raw = req.model_dump()
+    patch: dict = {}
+    for k, v in raw.items():
+        if v is None:
+            continue
+        if k == "expanded":
+            patch[k] = 1 if v else 0
+        else:
+            patch[k] = v
     if patch:
         store.drafts.update_fields(file_id, idx, **patch)
     d = store.drafts.get(file_id, idx)
@@ -220,6 +233,7 @@ def patch_draft(file_id: str, idx: int, req: DraftPatch) -> DraftState:
         title=d["title"], artist=d["artist"], album=d["album"],
         track=d["track"], year=d["year"], genre=d["genre"],
         lyrics=d["lyrics"], has_art=bool(d["art_path"] and Path(d["art_path"]).exists()),
+        expanded=bool(d.get("expanded", 1)),
     )
 
 

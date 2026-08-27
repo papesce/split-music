@@ -27,6 +27,7 @@ export interface DraftState {
   genre: string
   lyrics: string
   has_art: boolean
+  expanded: boolean
 }
 
 export interface FileStateResponse extends FileEntry {

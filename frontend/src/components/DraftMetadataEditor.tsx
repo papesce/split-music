@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import type { DraftState, SuggestPasteResult } from '@/types'
-import { patchDraft, transcribePreview, suggestFromText } from '@/api'
+import { patchDraft, transcribePreview, suggestFromText, suggestLyricsFromText } from '@/api'
 import { TRACK_FIELDS } from '@/utils/trackUtils'
 import { formatLyrics } from '@/utils/lyrics'
 import { SuggestModal } from '@/components/SuggestModal'
+import { LyricsSearchModal } from '@/components/LyricsSearchModal'
 
 function FormatLyricsModal({
   initialText,
@@ -128,6 +129,12 @@ export function DraftMetadataEditor({ fileId, idx, draft, startMs, endMs, focuse
     onSuccess: (prompt) => setSuggestPrompt(prompt),
   })
 
+  const [lyricsSearchPrompt, setLyricsSearchPrompt] = useState<string | null>(null)
+  const lyricsSearchMutation = useMutation({
+    mutationFn: () => suggestLyricsFromText(fields.title, fields.artist, fields.album),
+    onSuccess: (prompt) => setLyricsSearchPrompt(prompt),
+  })
+
   const [formatOpen, setFormatOpen] = useState(false)
 
   function applyPasteResult(result: SuggestPasteResult) {
@@ -152,6 +159,19 @@ export function DraftMetadataEditor({ fileId, idx, draft, startMs, endMs, focuse
     <div className="border-t border-zinc-100 px-4 py-3 bg-zinc-50 flex flex-col gap-3">
       {suggestPrompt !== null && (
         <SuggestModal prompt={suggestPrompt} onApply={applyPasteResult} onClose={() => setSuggestPrompt(null)} />
+      )}
+      {lyricsSearchPrompt !== null && (
+        <LyricsSearchModal
+          prompt={lyricsSearchPrompt}
+          onClose={() => setLyricsSearchPrompt(null)}
+          onApply={(formatted) => {
+            setLyrics(formatted)
+            saveMutation.mutate({ lyrics: formatted })
+            qc.invalidateQueries({ queryKey: ['drafts', fileId] })
+            qc.invalidateQueries({ queryKey: ['draft', fileId, idx] })
+            setLyricsSearchPrompt(null)
+          }}
+        />
       )}
       {formatOpen && (
         <FormatLyricsModal
@@ -184,6 +204,14 @@ export function DraftMetadataEditor({ fileId, idx, draft, startMs, endMs, focuse
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wide">Lyrics</span>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => lyricsSearchMutation.mutate()}
+              disabled={lyricsSearchMutation.isPending || !fields.title.trim() || !fields.artist.trim()}
+              title={!fields.title.trim() || !fields.artist.trim() ? 'Enter title and artist first' : 'Copy prompt to search lyrics via ChatGPT'}
+              className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+            >
+              {lyricsSearchMutation.isPending ? 'Building…' : '✦ Search lyrics'}
+            </button>
             <button
               onClick={() => setFormatOpen(true)}
               title="Paste raw lyrics and normalize formatting (preserves line breaks)"

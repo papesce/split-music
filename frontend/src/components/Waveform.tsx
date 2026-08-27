@@ -10,6 +10,8 @@ export interface WaveformHandle {
   zoomTo: (startMs: number, endMs: number) => void
   /** Reset to full-file zoom */
   resetZoom: () => void
+  /** Current cursor position in ms (last click / playhead) */
+  getCursorMs: () => number | null
 }
 
 interface Props {
@@ -51,11 +53,20 @@ export function Waveform({
   // zoom level: pixels-per-second (1 = full file fits container)
   const [zoom, setZoom] = useState(1)
   const [hintOpen, setHintOpen] = useState(false)
+  // Cursor position (ms) — where next split will be inserted; updated on click / seek
+  const [cursorMs, setCursorMs] = useState<number | null>(null)
+  const cursorMsRef = useRef<number | null>(null)
+  cursorMsRef.current = cursorMs
 
   const onAudioProcess = useCallback((currentTimeSec: number) => {
     if (stopAtRef.current !== null && currentTimeSec >= stopAtRef.current) {
       wsRef.current?.pause()
       stopAtRef.current = null
+    }
+    // Keep cursor in sync with playhead while playing
+    if (cursorMsRef.current !== null || wsRef.current?.isPlaying()) {
+      // update cursor to live playhead for accurate "Split at cursor" while playing
+      setCursorMs(Math.round(currentTimeSec * 1000))
     }
   }, [])
 
@@ -97,6 +108,7 @@ export function Waveform({
           stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
           ws.pause()
           ws.seekTo(startMs / (durationMs || 1))
+          setCursorMs(startMs)
           const p = ws.play()
           if (p && typeof (p as Promise<void>).catch === 'function') {
             ;(p as Promise<void>).catch((err) => {
@@ -124,6 +136,7 @@ export function Waveform({
           const pxPerSec = computeZoomForWindow(startMs, endMs)
           applyZoom(pxPerSec)
           ws.seekTo(startMs / (durationMs || 1))
+          setCursorMs(startMs)
         } catch (err) {
           console.warn('[Waveform] zoomTo ignored', err)
         }
@@ -131,6 +144,10 @@ export function Waveform({
       resetZoom() {
         if (!ready) return
         applyZoom(1)
+      },
+      getCursorMs() {
+        if (cursorMsRef.current !== null) return cursorMsRef.current
+        try { return Math.round((wsRef.current?.getCurrentTime() ?? 0) * 1000) } catch { return null }
       },
     }),
     [durationMs, applyZoom, computeZoomForWindow, ready],
@@ -193,51 +210,40 @@ export function Waveform({
       stopAtRef.current = null
     })
     ws.on('audioprocess', onAudioProcess)
+    ws.on('timeupdate', onAudioProcess)
 
-    // Plain click → seek + resume playback; Shift+click → insert split point
+    // Click → position cursor (seek, no auto-play). Splitting is via button.
+    // Keep marker / band guards so drag/click on regions doesn't move cursor.
+    const containerEl = containerRef.current as HTMLElement | null
+    const onPointerDown = (e: PointerEvent) => {
+      ;(ws as unknown as { _pointerDownTarget?: EventTarget | null })._pointerDownTarget = e.target
+    }
+    containerEl?.addEventListener('pointerdown', onPointerDown)
+
     ws.on('interaction', (newTimeSec: number) => {
-      // Disable Shift+click add while focused
-      const isFocused = (ws as unknown as { _focused?: boolean })._focused
       if ((ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked) {
         ;(ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = false
         return
       }
-      const shiftHeld = (ws as unknown as { _shiftHeld?: boolean })._shiftHeld
-      if (shiftHeld && !isFocused) {
-        // Shift+click → add a split point (disabled when focused)
-        onAddSplit?.(Math.round(newTimeSec * 1000))
+      const target = (ws as unknown as { _pointerDownTarget?: EventTarget | null })._pointerDownTarget as HTMLElement | null
+      if (target?.closest?.('[data-marker="true"]')) {
         return
       }
-      // Plain click → seek and resume playback
-      stopAtRef.current = null
+      const ms = Math.round(newTimeSec * 1000)
       try {
-        const p = ws.play()
-        if (p && typeof (p as Promise<void>).catch === 'function') {
-          ;(p as Promise<void>).catch((err) => {
-            if (err instanceof Error && err.name === 'AbortError') return
-            console.error('[Waveform] interaction play failed', err)
-          })
-        }
+        ws.seekTo(newTimeSec / (ws.getDuration() || 1))
+        ws.pause()
+        stopAtRef.current = null
+        setCursorMs(ms)
       } catch (err) {
-        console.error('[Waveform] interaction play error', err)
+        console.error('[Waveform] seek error', err)
       }
     })
 
-    // Track shift key state so the interaction handler can read it synchronously
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') (ws as unknown as { _shiftHeld?: boolean })._shiftHeld = true
-    }
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') (ws as unknown as { _shiftHeld?: boolean })._shiftHeld = false
-    }
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-
     wsRef.current = ws
     return () => {
+      containerEl?.removeEventListener('pointerdown', onPointerDown)
       ws.destroy()
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl])
@@ -257,6 +263,25 @@ export function Waveform({
     ws.on('audioprocess', onAudioProcess)
   }, [onAudioProcess])
 
+  // S → split at cursor (when not typing, not focused)
+  useEffect(() => {
+    if (!onAddSplit) return
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.code !== 'KeyS' || e.metaKey || e.ctrlKey || e.altKey) return
+      if (focusedIndex !== null && focusedIndex !== undefined) return
+      if (cursorMs === null || !ready) return
+      const minGap = 350
+      if (cursorMs <= minGap || cursorMs >= durationMs - minGap) return
+      if (splitPoints.some((p) => Math.abs(p - (cursorMs as number)) <= minGap)) return
+      e.preventDefault()
+      onAddSplit(cursorMs as number)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onAddSplit, cursorMs, ready, focusedIndex, durationMs, splitPoints])
+
   // When focused we load isolated audio — no auto-zoom to window needed.
   // Just ensure zoom is reset for the isolated waveform.
   useEffect(() => {
@@ -271,7 +296,7 @@ export function Waveform({
   useEffect(() => {
     const regions = regionsRef.current
     const ws = wsRef.current
-    if (!regions || !ws || durationMs === 0) return
+    if (!regions || !ws || durationMs === 0 || !ready) return
 
     regions.clearRegions()
     bandRegionIds.current.clear()
@@ -300,20 +325,61 @@ export function Waveform({
       bandRegionIds.current.add(r.id)
 
       r.on('click', () => {
-        // Let the waveform interaction handler take over (seek + play from click position)
+        // Prevent the 'interaction' handler from also seeking/playing
+        ;(ws as unknown as { _regionClickBlocked?: boolean })._regionClickBlocked = true
         onRegionClick?.(i)
       })
     })
 
     // Draggable red marker regions for each interior boundary
-    boundaries.forEach((ptMs) => {
+    // 0.01s is <1px at full-file zoom (invisible) — force a visible width via CSS
+    boundaries.forEach((ptMs, idx) => {
       const markerRegion = regions.addRegion({
         start: ptMs / 1000,
-        end: ptMs / 1000 + 0.01,
-        color: 'rgba(239,68,68,0.85)',
+        end: ptMs / 1000 + 0.02,
+        color: 'rgba(239,68,68,0.95)',
         drag: true,
         resize: false,
       })
+
+      const el = markerRegion.element as HTMLElement | null
+      if (el) {
+        el.dataset['marker'] = 'true'
+        el.style.minWidth = '4px'
+        el.style.width = '4px'
+        el.style.marginLeft = '-2px'
+        el.style.zIndex = '5'
+        el.style.cursor = 'ew-resize'
+        el.style.borderRadius = '1px'
+        el.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.15)'
+        el.style.overflow = 'visible'
+
+        // Track number badge anchored to the marker — shows the track that starts at this boundary (idx+2)
+        const trackNumber = idx + 2
+        const badge = document.createElement('span')
+        badge.textContent = String(trackNumber)
+        badge.title = `Track ${trackNumber} starts here`
+        badge.setAttribute('aria-label', `Track ${trackNumber}`)
+        Object.assign(badge.style, {
+          position: 'absolute',
+          top: '2px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgb(239,68,68)',
+          color: 'white',
+          fontSize: '10px',
+          fontWeight: '700',
+          lineHeight: '1',
+          padding: '2px 5px',
+          borderRadius: '9999px',
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
+          zIndex: '10',
+          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        } as CSSStyleDeclaration)
+        el.appendChild(badge)
+      }
 
       markerRegion.on('update-end', () => {
         const newPtMs = Math.round(markerRegion.start * 1000)
@@ -321,7 +387,7 @@ export function Waveform({
         onSplitPointsChange(sorted(updated))
       })
     })
-  }, [splitPoints, durationMs, onSplitPointsChange, onRegionClick, focusedIndex])
+  }, [splitPoints, durationMs, onSplitPointsChange, onRegionClick, focusedIndex, ready])
 
   const togglePlay = () => {
     try { wsRef.current?.playPause() } catch (err) { console.error('[Waveform] togglePlay error', err) }
@@ -345,13 +411,37 @@ export function Waveform({
     return `≈ ${Math.round(visibleSec / 60)}m`
   }, [zoom])
 
+  const isFocused = focusedIndex !== null && focusedIndex !== undefined
+  const MIN_GAP_MS = 350
+  const canSplitAtCursor = useMemo(() => {
+    if (!ready || isFocused || cursorMs === null || !onAddSplit) return false
+    if (cursorMs <= MIN_GAP_MS || cursorMs >= durationMs - MIN_GAP_MS) return false
+    return splitPoints.every((p) => Math.abs(p - cursorMs) > MIN_GAP_MS)
+  }, [ready, isFocused, cursorMs, onAddSplit, splitPoints, durationMs])
+
+  const splitDisabledReason = useMemo(() => {
+    if (!ready) return 'Waveform not ready'
+    if (isFocused) return 'Unavailable when focused'
+    if (cursorMs === null) return 'Click waveform to position cursor'
+    if (cursorMs <= MIN_GAP_MS || cursorMs >= durationMs - MIN_GAP_MS) return 'Too close to start/end'
+    if (splitPoints.some((p) => Math.abs(p - (cursorMs as number)) <= MIN_GAP_MS)) return 'Too close to existing split'
+    return null
+  }, [ready, isFocused, cursorMs, durationMs, splitPoints])
+
+  function fmtMs(ms: number): string {
+    const totalSec = Math.floor(ms / 1000)
+    const m = Math.floor(totalSec / 60)
+    const s = String(totalSec % 60).padStart(2, '0')
+    return `${m}:${s}`
+  }
+
   return (
     <div className="flex flex-col gap-2">
       {/* Waveform canvas */}
       <div
         ref={containerRef}
         className="w-full rounded-xl overflow-hidden bg-zinc-900 cursor-pointer"
-        title="Click to seek · Shift+click to add a split · Drag red markers to adjust"
+        title="Click to position cursor · Drag red markers to adjust"
       />
       {error && <div className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Waveform failed to load: {error}</div>}
 
@@ -364,7 +454,10 @@ export function Waveform({
             const ws = wsRef.current
             if (!ws) return
             const cur = ws.getCurrentTime()
-            ws.seekTo(Math.max(0, (cur - 5) / ((durationMs || 1) / 1000)))
+            const next = Math.max(0, cur - 5)
+            ws.seekTo(next / ((durationMs || 1) / 1000))
+            try { ws.pause() } catch {}
+            setCursorMs(Math.round(next * 1000))
           }}
           disabled={!ready}
           className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 transition-colors"
@@ -407,7 +500,10 @@ export function Waveform({
             if (!ws) return
             const dur = (durationMs || 1) / 1000
             const cur = ws.getCurrentTime()
-            ws.seekTo(Math.min(1, (cur + 5) / dur))
+            const next = Math.min(dur, cur + 5)
+            ws.seekTo(Math.min(1, next / dur))
+            try { ws.pause() } catch {}
+            setCursorMs(Math.round(next * 1000))
           }}
           disabled={!ready}
           className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 transition-colors"
@@ -426,18 +522,25 @@ export function Waveform({
         {/* Divider */}
         {ready && <span className="mx-1 h-5 w-px bg-zinc-200 shrink-0" />}
 
+        {/* ── Split at cursor ── */}
+        {ready && !isFocused && onAddSplit && (
+          <button
+            id="waveform-split-at-cursor"
+            onClick={() => { if (cursorMs !== null && canSplitAtCursor) onAddSplit(cursorMs) }}
+            disabled={!canSplitAtCursor}
+            title={splitDisabledReason ?? `Split at ${cursorMs !== null ? fmtMs(cursorMs) : 'cursor'} (S)`}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold disabled:opacity-40 hover:bg-red-700 transition-colors whitespace-nowrap"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zM9.879 9.879L4 4m5.879 5.879a3 3 0 104.243-4.243 3 3 0 00-4.243 4.243z" />
+            </svg>
+            Split at {cursorMs !== null ? fmtMs(cursorMs) : '—:--'}
+          </button>
+        )}
+
         {/* ── Zoom group ── */}
         {ready && (
           <div className="flex items-center gap-2">
-            {isZoomed && (
-              <button
-                onClick={() => applyZoom(1)}
-                className="text-xs px-2 py-1 rounded-lg border border-zinc-200 text-zinc-500 hover:bg-zinc-100 transition-colors whitespace-nowrap"
-                title="Reset zoom"
-              >
-                Reset
-              </button>
-            )}
             <svg
               className="w-3.5 h-3.5 text-zinc-400 shrink-0"
               fill="none"
@@ -462,6 +565,15 @@ export function Waveform({
               title={`Zoom: ${visibleLabel}`}
             />
             <span className="text-xs text-zinc-400 tabular-nums w-14">{visibleLabel}</span>
+            {isZoomed && (
+              <button
+                onClick={() => applyZoom(1)}
+                className="text-xs px-2 py-1 rounded-lg border border-zinc-200 text-zinc-500 hover:bg-zinc-100 transition-colors whitespace-nowrap"
+                title="Reset zoom"
+              >
+                Reset
+              </button>
+            )}
           </div>
         )}
 
@@ -496,12 +608,18 @@ export function Waveform({
                       </kbd>{' '}
                       Skip 5s back / forward
                     </p>
+                    <p>
+                      <kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">
+                        Click
+                      </kbd>{' '}
+                      Position cursor
+                    </p>
                     {onAddSplit && (
                       <p>
                         <kbd className="px-1 py-0.5 rounded bg-zinc-100 font-mono text-[10px]">
-                          Shift+click
+                          S
                         </kbd>{' '}
-                        Add split point
+                        Split at cursor
                       </p>
                     )}
                     <p>

@@ -39,6 +39,30 @@ Lyrics (may contain transcription errors — use them only to identify the song)
 ---"""
 
 
+_LYRICS_SEARCH_TEMPLATE = """\
+You are a music expert. Find the complete lyrics for the song below.
+
+Song: {title}
+Artist: {artist}
+
+Respond with ONLY the full lyrics as plain text — no JSON, no explanation, no markdown fence. Preserve original line breaks and stanza spacing (blank line between verses/chorus). If you are not confident you have the correct song, still output your best match but prefix with a single line: "Uncertain match — please verify:".
+
+Example response:
+When the night has come
+And the land is dark
+...
+
+Song: {title}
+Artist: {artist}"""
+
+
 def build_suggest_prompt(lyrics: str) -> str:
     """Return the ready-to-paste prompt for the given lyrics."""
     return _PROMPT_TEMPLATE.format(lyrics=lyrics.strip())
+
+
+def build_lyrics_search_prompt(title: str, artist: str, album: str = "") -> str:
+    """Return a prompt that asks an LLM to return lyrics for the given title/artist."""
+    # album is accepted for API compatibility but intentionally not included
+    # in the prompt per requested format: Song/Artist only
+    return _LYRICS_SEARCH_TEMPLATE.format(title=title.strip(), artist=artist.strip())

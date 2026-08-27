@@ -15,7 +15,7 @@ import { TimeInput } from '@/components/TimeInput'
 import { TrackListHeader } from '@/components/TrackListHeader'
 import { TrackMetadataEditor } from '@/components/TrackMetadataEditor'
 import { DraftMetadataEditor } from '@/components/DraftMetadataEditor'
-import { listDrafts } from '@/api'
+import { listDrafts, patchDraft } from '@/api'
 
 // ---------------------------------------------------------------------------
 // TrackList
@@ -102,7 +102,17 @@ export function TrackList({
   const toggleAll = () =>
     setSelected(allSelected ? new Set() : new Set(Array.from({ length: trackCount }, (_, i) => i)))
 
-  const handleCollapseAll = useCallback(() => setCollapseSignal((n) => n + 1), [])
+  const handleCollapseAll = useCallback(() => {
+    setCollapseSignal((n) => n + 1)
+    // Persist collapsed state for all tracks that have drafts (or create drafts)
+    for (let i = 0; i < trackCount; i++) {
+      patchDraft(fileId, i, { expanded: false } as Partial<import('@/types').DraftState>).catch(() => {})
+    }
+    // Optimistically update cache
+    qc.setQueryData(['drafts', fileId], (old: import('@/types').DraftState[] | undefined) =>
+      old?.map((d) => ({ ...d, expanded: false })),
+    )
+  }, [fileId, trackCount, qc])
 
   const collectSegments = useCallback(
     (map: Map<number, string>): Promise<SegmentMeta[]> =>
@@ -345,12 +355,24 @@ function TrackRow({
   const qc = useQueryClient()
   const isSplit = segmentId !== null
 
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(() => draft?.expanded ?? true)
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Sync from backend draft (e.g. after resume or Collapse All)
+  useEffect(() => {
+    if (draft?.expanded !== undefined) setExpanded(draft.expanded)
+  }, [draft?.expanded])
 
   useEffect(() => {
     if (collapseSignal) setExpanded(false)
   }, [collapseSignal])
+
+  const persistExpanded = useCallback((next: boolean) => {
+    setExpanded(next)
+    patchDraft(fileId, index, { expanded: next } as Partial<import('@/types').DraftState>)
+      .then(() => qc.invalidateQueries({ queryKey: ['drafts', fileId] }))
+      .catch(() => {})
+  }, [fileId, index, qc])
 
   useEffect(() => {
     if (!confirmDelete) return
@@ -627,7 +649,7 @@ function TrackRow({
 
         {/* Chevron expand/collapse — always available to unify pre/post split editor */}
         <button
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => persistExpanded(!expanded)}
           title={expanded ? 'Collapse' : 'Expand'}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
         >
