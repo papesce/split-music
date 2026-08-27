@@ -2,12 +2,17 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'r
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 
+export type WaveStateReason = 'play' | 'pause' | 'finish' | 'stopAt' | 'seek' | 'stop'
+
 export interface WaveformHandle {
-  playFrom: (startMs: number, endMs?: number) => void
+  playFrom: (startMs: number, endMs?: number) => Promise<boolean>
   pause: () => void
+  stop: () => void
   zoomTo: (startMs: number, endMs: number) => void
   resetZoom: () => void
   getCursorMs: () => number | null
+  isReady: () => boolean
+  isPlaying: () => boolean
 }
 
 export function useWaveSurfer({
@@ -15,11 +20,13 @@ export function useWaveSurfer({
   containerRef,
   durationMs,
   ref,
+  onStateChange,
 }: {
   audioUrl: string
   containerRef: React.RefObject<HTMLDivElement | null>
   durationMs: number
   ref?: React.Ref<WaveformHandle>
+  onStateChange?: ((playing: boolean, reason: WaveStateReason) => void) | undefined
 }) {
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
@@ -38,12 +45,13 @@ export function useWaveSurfer({
       if (stopAtRef.current !== null && currentTimeSec >= stopAtRef.current) {
         wsRef.current?.pause()
         stopAtRef.current = null
+        onStateChange?.(false, 'stopAt')
       }
       if (cursorMsRef.current !== null || wsRef.current?.isPlaying()) {
         setCursorMs(Math.round(currentTimeSec * 1000))
       }
     },
-    [],
+    [onStateChange],
   )
 
   const applyZoom = useCallback((pxPerSec: number) => {
@@ -71,12 +79,12 @@ export function useWaveSurfer({
   useImperativeHandle(
     ref,
     () => ({
-      playFrom(startMs: number, endMs?: number) {
+      async playFrom(startMs: number, endMs?: number): Promise<boolean> {
         const ws = wsRef.current
-        if (!ws) return
+        if (!ws) return false
         if (!ready) {
           pendingPlayRef.current = endMs !== undefined ? { startMs, endMs } : { startMs }
-          return
+          return false
         }
         try {
           stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
@@ -85,17 +93,20 @@ export function useWaveSurfer({
           setCursorMs(startMs)
           const p = ws.play()
           if (p && typeof (p as Promise<void>).catch === 'function') {
-            ;(p as Promise<void>).catch((err) => {
+            await (p as Promise<void>).catch((err) => {
               if (err instanceof Error && err.name === 'AbortError') return
               console.error('[Waveform] play failed', err)
+              throw err
             })
           }
+          return true
         } catch (err) {
           if (err instanceof Error && err.message.includes('No audio')) {
             pendingPlayRef.current = endMs !== undefined ? { startMs, endMs } : { startMs }
-            return
+            return false
           }
           console.error('[Waveform] playFrom error', err)
+          return false
         }
       },
       pause() {
@@ -106,6 +117,18 @@ export function useWaveSurfer({
         } catch {
           /* ignore */
         }
+      },
+      stop() {
+        stopAtRef.current = null
+        pendingPlayRef.current = null
+        try {
+          wsRef.current?.pause()
+          wsRef.current?.seekTo(0)
+        } catch {
+          /* ignore */
+        }
+        setCursorMs(0)
+        onStateChange?.(false, 'stop')
       },
       zoomTo(startMs: number, endMs: number) {
         const ws = wsRef.current
@@ -131,8 +154,18 @@ export function useWaveSurfer({
           return null
         }
       },
+      isReady() {
+        return ready
+      },
+      isPlaying() {
+        try {
+          return !!wsRef.current?.isPlaying()
+        } catch {
+          return false
+        }
+      },
     }),
-    [durationMs, applyZoom, computeZoomForWindow, ready],
+    [durationMs, applyZoom, computeZoomForWindow, ready, onStateChange],
   )
 
   useEffect(() => {
@@ -163,11 +196,13 @@ export function useWaveSurfer({
         try {
           stopAtRef.current = endMs !== undefined ? endMs / 1000 : null
           ws.seekTo(startMs / ((ws.getDuration() * 1000) || 1))
+          setCursorMs(startMs)
           const p = ws.play()
           if (p && typeof (p as Promise<void>).catch === 'function') {
             ;(p as Promise<void>).catch((err) => {
               if (err instanceof Error && err.name === 'AbortError') return
               console.error('[Waveform] deferred play failed', err)
+              onStateChange?.(false, 'pause')
             })
           }
         } catch (err) {
@@ -179,11 +214,12 @@ export function useWaveSurfer({
       console.error('[Waveform] error event', err)
       setError(err instanceof Error ? err.message : String(err))
     })
-    ws.on('play', () => setPlaying(true))
-    ws.on('pause', () => setPlaying(false))
+    ws.on('play', () => { setPlaying(true); onStateChange?.(true, 'play') })
+    ws.on('pause', () => { setPlaying(false); onStateChange?.(false, 'pause') })
     ws.on('finish', () => {
       setPlaying(false)
       stopAtRef.current = null
+      onStateChange?.(false, 'finish')
     })
     ws.on('audioprocess', onAudioProcess)
     ws.on('timeupdate', onAudioProcess)
@@ -206,7 +242,9 @@ export function useWaveSurfer({
         ws.seekTo(newTimeSec / (ws.getDuration() || 1))
         ws.pause()
         stopAtRef.current = null
+        pendingPlayRef.current = null
         setCursorMs(ms)
+        onStateChange?.(false, 'seek')
       } catch (err) {
         console.error('[Waveform] seek error', err)
       }

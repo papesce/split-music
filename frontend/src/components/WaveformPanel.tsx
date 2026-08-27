@@ -20,6 +20,9 @@ interface Props {
   focusedIndex?: number | null | undefined
   focusedSegmentId?: string | null
   onExitFocus?: () => void
+  onWaveStateChange?: ((playing: boolean, reason: import('@/hooks/useWaveSurfer').WaveStateReason) => void) | undefined
+  onTogglePlay?: (() => void) | undefined
+  onSeekPause?: (() => void) | undefined
 }
 
 export function WaveformPanel({
@@ -40,6 +43,9 @@ export function WaveformPanel({
   focusedIndex,
   focusedSegmentId,
   onExitFocus,
+  onWaveStateChange,
+  onTogglePlay,
+  onSeekPause,
 }: Props) {
   const [showSensitivity, setShowSensitivity] = useState(false)
   const isFocused = focusedIndex !== null && focusedIndex !== undefined
@@ -115,6 +121,9 @@ export function WaveformPanel({
             onRegionClick={onRegionClick}
             onAddSplit={onAddSplit}
             focusedIndex={focusedIndex}
+            onWaveStateChange={onWaveStateChange}
+            onTogglePlay={onTogglePlay}
+            onSeekPause={onSeekPause}
           />
         )
       })()}

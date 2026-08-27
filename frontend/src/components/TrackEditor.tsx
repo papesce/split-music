@@ -43,8 +43,10 @@ interface Props {
   segmentId: string | null
   draft?: DraftState | undefined
   isPlaying: boolean
+  waveformReady?: boolean | undefined
   onPlay: () => void
   onPause: () => void
+  onStop?: (() => void) | undefined
   onBoundariesChange: (s: number, e: number) => void
   onSplit: (sid: string) => void
   onUnclipped?: () => void
@@ -87,7 +89,7 @@ function LyricsPreviewModal({ result, currentLyrics, onInsert, onClose }: { resu
 }
 
 export function TrackEditor(props: Props) {
-  const { id, fileId, index, startMs, endMs, segmentId, draft, isPlaying, onPlay, onPause, onBoundariesChange, onSplit, onUnclipped, onDelete, onSplitTrack, trackCount, onFocus, onExitFocus, mode, selected, onToggleSelect, collapseSignal } = props
+  const { id, fileId, index, startMs, endMs, segmentId, draft, isPlaying, waveformReady, onPlay, onPause, onStop, onBoundariesChange, onSplit, onUnclipped, onDelete, onSplitTrack, trackCount, onFocus, onExitFocus, mode, selected, onToggleSelect, collapseSignal } = props
   const qc = useQueryClient()
   const isSplit = segmentId !== null
   const isFocusedMode = mode === 'focused'
@@ -301,9 +303,10 @@ export function TrackEditor(props: Props) {
           </div>
         </div>
         {onFocus && mode==='list' && <button onClick={onFocus} title="Focus this track (zoom waveform, expand editor)" className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>}
-        <button onClick={isPlaying? onPause: onPlay} title={isPlaying?'Pause':'Preview'} className={isFocusedMode ? "shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors" : "shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"}>
+        <button onClick={isPlaying? onPause: onPlay} title={isPlaying?'Pause':waveformReady===false?'Loading waveform…':'Preview'} disabled={waveformReady===false && !isPlaying} className={isFocusedMode ? "shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors" : "shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-40 transition-colors"}>
           {isPlaying? <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M5 4h3v12H5V4zm7 0h3v12h-3V4z"/></svg> : <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.34-5.89a1.5 1.5 0 000-2.54L6.3 2.84z"/></svg>}
         </button>
+        {isPlaying && onStop && <button onClick={onStop} title="Stop" className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors"><svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><rect x="5" y="5" width="10" height="10" rx="1"/></svg></button>}
         {isSplit && <button onClick={()=> identifyMutation.mutate()} disabled={identifyMutation.isPending} title="Auto-identify" className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-violet-50 text-violet-600 hover:bg-violet-100 disabled:opacity-40"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z"/></svg></button>}
         {isSplit && seg && <button onClick={()=> exportSingle(seg)} title="Download as MP3" className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg></button>}
         {isSplit && <button onClick={()=> unsplitMutation.mutate()} disabled={unsplitMutation.isPending} title="Discard split MP3 and go back to pre-split (draft) state" className="shrink-0 px-2.5 py-1 rounded-lg border border-amber-200 text-amber-700 text-xs hover:bg-amber-50 disabled:opacity-40 transition-colors whitespace-nowrap">{unsplitMutation.isPending?'Discarding…':'Unclip'}</button>}

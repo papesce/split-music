@@ -19,7 +19,49 @@ export default function App() {
   const [waveformPanelH, setWaveformPanelH] = useState(232)
   const [artModalOpen, setArtModalOpen] = useState(false)
   const [playingTrack, setPlayingTrack] = useState<number | null>(null)
+  const pendingPlayRef = useRef<{ index: number; startMs: number; endMs?: number } | null>(null)
+  const playingTrackRef = useRef<number | null>(null)
+  playingTrackRef.current = playingTrack
   const [exporting, setExporting] = useState(false)
+
+  const handleWaveStateChange = useCallback((playing: boolean, reason: string) => {
+    if (!playing) {
+      if (reason === 'pause' || reason === 'finish' || reason === 'stopAt' || reason === 'stop') {
+        pendingPlayRef.current = null
+        setPlayingTrack(null)
+      } else if (reason === 'seek') {
+        setPlayingTrack(null)
+      }
+    } else {
+      // deferred play succeeded – if we had a pending track play, commit it
+      if (pendingPlayRef.current) {
+        const p = pendingPlayRef.current
+        pendingPlayRef.current = null
+        setPlayingTrack(p.index)
+      }
+    }
+  }, [])
+
+  const handleTogglePlay = useCallback(async () => {
+    const ws = waveformRef.current
+    if (!ws) return
+    if (ws.isPlaying()) {
+      ws.pause()
+      setPlayingTrack(null)
+      pendingPlayRef.current = null
+    } else {
+      // global play from cursor – not track-bounded
+      const cur = ws.getCursorMs() ?? 0
+      const ok = await ws.playFrom(cur)
+      if (ok) setPlayingTrack(null)
+      // if not ready, we deliberately keep playingTrack null (global play pending, no row highlight)
+    }
+  }, [])
+
+  const handleSeekPause = useCallback(() => {
+    setPlayingTrack(null)
+    pendingPlayRef.current = null
+  }, [])
 
   // measure waveform panel height
   useEffect(() => {
@@ -37,6 +79,11 @@ export default function App() {
 
   const handleDeleteTrack = useCallback(
     (index: number, mode: 'mergePrev' | 'mergeNext' | 'discard' = 'mergeNext') => {
+      // clear/stale playingTrack
+      if (playingTrackRef.current !== null) {
+        if (playingTrackRef.current === index) { setPlayingTrack(null); pendingPlayRef.current = null; waveformRef.current?.pause() }
+        else if (playingTrackRef.current > index) setPlayingTrack((v) => (v !== null ? v - 1 : v))
+      }
       // adjust focused index
       if (session.focusedIndex !== null) {
         if (session.focusedIndex === index) session.setFocusedIndex(null)
@@ -66,6 +113,15 @@ export default function App() {
     [session],
   )
 
+  const splittableCount = session.splitPoints.length > 1 ? session.splitPoints.length - 1 : 0
+  const waveformReady = !!waveformRef.current?.isReady?.()
+
+  // clear playing on stage/file change and stale index
+  useEffect(() => { setPlayingTrack(null); pendingPlayRef.current = null }, [session.upload?.file_id, session.stage])
+  useEffect(() => {
+    if (playingTrack !== null && playingTrack >= splittableCount) { setPlayingTrack(null); pendingPlayRef.current = null }
+  }, [splittableCount, playingTrack])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && session.focusedIndex !== null) {
@@ -77,14 +133,15 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.code === 'Space') {
         e.preventDefault()
-        document.getElementById('waveform-play-btn')?.click()
+        handleTogglePlay()
+        return
       }
       if (e.code === 'ArrowRight') document.getElementById('waveform-skip-fwd')?.click()
       if (e.code === 'ArrowLeft') document.getElementById('waveform-skip-bwd')?.click()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [session.focusedIndex, handleExitFocus])
+  }, [session.focusedIndex, handleExitFocus, handleTogglePlay])
 
   const handleExportAll = async () => {
     if (!session.upload || session.splitSegments.length === 0) return
@@ -95,8 +152,6 @@ export default function App() {
       setExporting(false)
     }
   }
-
-  const splittableCount = session.splitPoints.length > 1 ? session.splitPoints.length - 1 : 0
 
   if (session.stage === 'loading') {
     return (
@@ -197,6 +252,9 @@ export default function App() {
             focusedIndex={session.focusedIndex}
             focusedSegmentId={session.focusedIndex !== null ? (session.splitMap.get(session.focusedIndex) ?? null) : null}
             onExitFocus={handleExitFocus}
+            onWaveStateChange={handleWaveStateChange}
+            onTogglePlay={handleTogglePlay}
+            onSeekPause={handleSeekPause}
           />
         </WaveformErrorBoundary>
       </div>
@@ -216,19 +274,34 @@ export default function App() {
             initialSplitMap={session.splitMap}
             onSplitPointsChange={session.handleSplitPointsChange}
             playingTrack={playingTrack}
-            onPlay={(index, startMs, endMs) => {
+            waveformReady={waveformReady}
+            onPlay={async (index, startMs, endMs) => {
+              const ws = waveformRef.current
+              if (!ws) return
+              if (!ws.isReady()) {
+                pendingPlayRef.current = session.focusedIndex !== null ? { index, startMs: 0 } : { index, startMs, endMs }
+                // don't set playing yet – will be committed on ready/play callback
+                ws.playFrom(session.focusedIndex !== null ? 0 : startMs, session.focusedIndex !== null ? undefined : endMs)
+                return
+              }
               if (session.focusedIndex !== null) {
-                setPlayingTrack(index)
-                waveformRef.current?.playFrom(0)
+                const ok = await ws.playFrom(0)
+                if (ok) { setPlayingTrack(index); pendingPlayRef.current = null } else { pendingPlayRef.current = { index, startMs: 0 } }
               } else {
-                setPlayingTrack(index)
-                waveformRef.current?.zoomTo(startMs, endMs)
-                waveformRef.current?.playFrom(startMs, endMs)
+                ws.zoomTo(startMs, endMs)
+                const ok = await ws.playFrom(startMs, endMs)
+                if (ok) { setPlayingTrack(index); pendingPlayRef.current = null } else { pendingPlayRef.current = { index, startMs, endMs } }
               }
             }}
             onPause={() => {
+              pendingPlayRef.current = null
               setPlayingTrack(null)
               waveformRef.current?.pause()
+            }}
+            onStop={() => {
+              pendingPlayRef.current = null
+              setPlayingTrack(null)
+              waveformRef.current?.stop()
             }}
             onDeleteTrack={handleDeleteTrack}
             onSplitComplete={(segs) => {

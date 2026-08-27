@@ -14,6 +14,9 @@ interface Props {
   onAddSplit?: (positionMs: number) => void
   ref?: React.Ref<WaveformHandle>
   focusedIndex?: number | null | undefined
+  onWaveStateChange?: ((playing: boolean, reason: import('@/hooks/useWaveSurfer').WaveStateReason) => void) | undefined
+  onTogglePlay?: (() => void) | undefined
+  onSeekPause?: (() => void) | undefined
 }
 
 export function Waveform({
@@ -25,6 +28,9 @@ export function Waveform({
   onAddSplit,
   ref,
   focusedIndex,
+  onWaveStateChange,
+  onTogglePlay,
+  onSeekPause,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const {
@@ -37,7 +43,7 @@ export function Waveform({
     cursorMs,
     setCursorMs,
     applyZoom,
-  } = useWaveSurfer({ audioUrl, containerRef, durationMs, ref: ref as React.Ref<import("@/hooks/useWaveSurfer").WaveformHandle> })
+  } = useWaveSurfer({ audioUrl, containerRef, durationMs, ref: ref as React.Ref<import("@/hooks/useWaveSurfer").WaveformHandle>, onStateChange: onWaveStateChange })
 
   useWaveformRegions({
     wsRef,
@@ -108,6 +114,8 @@ export function Waveform({
         onAddSplit={onAddSplit}
         applyZoom={applyZoom}
         setCursorMs={setCursorMs}
+        onTogglePlay={onTogglePlay}
+        onSeekPause={onSeekPause}
       />
     </div>
   )

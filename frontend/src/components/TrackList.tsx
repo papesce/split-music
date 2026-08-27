@@ -15,7 +15,9 @@ interface TrackListProps {
   onSplitPointsChange: (points: number[]) => void
   onPlay: (index: number, startMs: number, endMs: number) => void
   onPause: () => void
+  onStop?: (() => void) | undefined
   playingTrack: number | null
+  waveformReady?: boolean | undefined
   onDeleteTrack: (index: number, mode: DeleteMode) => void
   onSplitComplete: (segments: SegmentMeta[]) => void
   onFocusTrack?: (index: number) => void
@@ -23,7 +25,7 @@ interface TrackListProps {
   onExitFocus?: () => void
 }
 
-export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsChange, onPlay, onPause, playingTrack, onDeleteTrack, onSplitComplete, onFocusTrack, focusedIndex = null, onExitFocus }: TrackListProps) {
+export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsChange, onPlay, onPause, onStop, playingTrack, waveformReady, onDeleteTrack, onSplitComplete, onFocusTrack, focusedIndex = null, onExitFocus }: TrackListProps) {
   const qc = useQueryClient()
   const trackCount = splitPoints.length - 1
   const isFocused = focusedIndex !== null && focusedIndex !== undefined
@@ -124,8 +126,10 @@ export function TrackList({ fileId, splitPoints, initialSplitMap, onSplitPointsC
               segmentId={splitMap.get(i) ?? null}
               draft={draft}
               isPlaying={playingTrack===i}
+              waveformReady={waveformReady}
               onPlay={()=> onPlay(i, startMs, endMs)}
               onPause={onPause}
+              onStop={onStop}
               onBoundariesChange={(ns,ne)=>{ const updated=[...splitPoints]; updated[i]=ns; updated[i+1]=ne; onSplitPointsChange(updated)}}
               onSplit={(sid)=> handleRowSplit(i,sid)}
               onUnclipped={()=> handleRowUnclipped(i)}

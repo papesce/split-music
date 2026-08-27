@@ -13,6 +13,8 @@ interface Props {
   onAddSplit: ((positionMs: number) => void) | undefined
   applyZoom: (pxPerSec: number) => void
   setCursorMs: (ms: number | null) => void
+  onTogglePlay?: (() => void) | undefined
+  onSeekPause?: (() => void) | undefined
 }
 
 export function WaveformToolbar({
@@ -27,10 +29,13 @@ export function WaveformToolbar({
   onAddSplit,
   applyZoom,
   setCursorMs,
+  onTogglePlay,
+  onSeekPause,
 }: Props) {
   const [hintOpen, setHintOpen] = useState(false)
 
   const togglePlay = () => {
+    if (onTogglePlay) { onTogglePlay(); return }
     try {
       wsRef.current?.playPause()
     } catch (err) {
@@ -88,6 +93,7 @@ export function WaveformToolbar({
             ws.pause()
           } catch {}
           setCursorMs(Math.round(next * 1000))
+          onSeekPause?.()
         }}
         disabled={!ready}
         className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 transition-colors"
@@ -131,6 +137,7 @@ export function WaveformToolbar({
             ws.pause()
           } catch {}
           setCursorMs(Math.round(next * 1000))
+          onSeekPause?.()
         }}
         disabled={!ready}
         className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 transition-colors"
