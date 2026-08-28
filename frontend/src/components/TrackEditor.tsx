@@ -304,7 +304,10 @@ export function TrackEditor(props: Props) {
             <TimeInput valueMs={startMs} onCommit={(ms)=> handleBoundaryChange(ms, endMs)} title="Edit start time"/>
             <span className="text-zinc-300 text-xs">→</span>
             <TimeInput valueMs={endMs} onCommit={(ms)=> handleBoundaryChange(startMs, ms)} title="Edit end time"/>
-            <span className="ml-1 text-zinc-300 text-xs">{msDuration(startMs,endMs)}</span>
+            <span className="ml-1 inline-flex items-center gap-1 text-xs font-medium text-zinc-700 bg-zinc-100 border border-zinc-200 rounded-full px-2 py-0.5" title={`${((endMs - startMs) / 1000).toFixed(1)}s`}>
+              <svg className="w-3 h-3 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              {msDuration(startMs,endMs)}
+            </span>
             {boundaryMutation.isPending && <span className="ml-1 text-blue-400 text-xs">re-slicing…</span>}
           </div>
         </div>
