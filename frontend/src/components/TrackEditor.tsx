@@ -20,6 +20,8 @@ import {
   fetchLyricsForSegment,
   searchLyrics,
   suggestLyricsFromSegment,
+  suggestArtworkFromSegment,
+  suggestArtworkFromText,
   patchDraft,
   suggestFromText,
   suggestLyricsFromText,
@@ -30,6 +32,7 @@ import { TimeInput } from '@/components/TimeInput'
 import { TRACK_FIELDS } from '@/utils/trackUtils'
 import { SuggestModal } from '@/components/SuggestModal'
 import { LyricsSearchModal } from '@/components/LyricsSearchModal'
+import { ArtworkSearchModal } from '@/components/ArtworkSearchModal'
 import { FormatLyricsModal } from '@/components/FormatLyricsModal'
 
 type DeleteMode = 'mergePrev' | 'mergeNext' | 'discard'
@@ -186,6 +189,7 @@ export function TrackEditor(props: Props) {
   // draft/segment save + aux mutations
   const [suggestPrompt, setSuggestPrompt] = useState<string|null>(null)
   const [lyricsSearchPrompt, setLyricsSearchPrompt] = useState<string|null>(null)
+  const [artworkSearchPrompt, setArtworkSearchPrompt] = useState<string|null>(null)
   const [lyricsResult, setLyricsResult] = useState<LyricsResult|null>(null)
   const [lyricsError, setLyricsError] = useState('')
   const [lyricsErrorDetails, setLyricsErrorDetails] = useState<{status?: number | undefined; detail:string; query:string}|null>(null)
@@ -215,6 +219,8 @@ export function TrackEditor(props: Props) {
   const suggestMutationDraft = useMutation({ mutationFn: ()=> suggestFromText(lyrics), onSuccess:(p)=> setSuggestPrompt(p)})
   const lyricsSearchMutationSeg = useMutation({ mutationFn: ()=> suggestLyricsFromSegment(segmentId as string), onSuccess:(p)=> setLyricsSearchPrompt(p), onError:(err:unknown)=>{ const msg = err instanceof Error? err.message: String(err); const ax=(err as any)?.response?.data?.detail ?? msg; setLyricsError(ax)}})
   const lyricsSearchMutationDraft = useMutation({ mutationFn: ()=> suggestLyricsFromText(fields.title, fields.artist, fields.album), onSuccess:(p)=> setLyricsSearchPrompt(p)})
+  const artworkSearchMutationSeg = useMutation({ mutationFn: ()=> suggestArtworkFromSegment(segmentId as string), onSuccess:(p)=> setArtworkSearchPrompt(p)})
+  const artworkSearchMutationDraft = useMutation({ mutationFn: ()=> suggestArtworkFromText(fields.title, fields.artist, fields.album), onSuccess:(p)=> setArtworkSearchPrompt(p)})
   const lyricsFetchMutation = useMutation({
     mutationFn: ()=> isSplit ? fetchLyricsForSegment(segmentId as string, fields.artist, fields.title, fields.album) : searchLyrics(fields.artist, fields.title, fields.album),
     onSuccess:(result)=>{
@@ -340,6 +346,7 @@ export function TrackEditor(props: Props) {
         <div className="border-t border-zinc-100 px-4 py-3 bg-zinc-50 flex flex-col gap-3">
           {suggestPrompt!==null && <SuggestModal prompt={suggestPrompt} onApply={applyPasteResult} onClose={()=> setSuggestPrompt(null)}/>}
           {lyricsSearchPrompt!==null && <LyricsSearchModal prompt={lyricsSearchPrompt} onClose={()=> setLyricsSearchPrompt(null)} onApply={(formatted)=>{ setLyrics(formatted); handleSaveLyrics(formatted); setLyricsSearchPrompt(null)}}/>}
+          {artworkSearchPrompt!==null && <ArtworkSearchModal prompt={artworkSearchPrompt} uploading={artMutation.isPending} onClose={()=> setArtworkSearchPrompt(null)} onUpload={(file)=>{ artMutation.mutate(file, { onSuccess: ()=> setArtworkSearchPrompt(null) })}}/>}
           {lyricsResult && <LyricsPreviewModal result={lyricsResult} currentLyrics={lyrics} onInsert={handleInsertLyrics} onClose={()=> setLyricsResult(null)}/>}
           {formatOpen && <FormatLyricsModal initialText={lyrics} onClose={()=> setFormatOpen(false)} onApply={(formatted)=>{ setLyrics(formatted); handleSaveLyrics(formatted); setFormatOpen(false)}}/>}
 
@@ -383,10 +390,11 @@ export function TrackEditor(props: Props) {
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wide">Lyrics</span>
               <div className="flex items-center gap-2">
-                <button onClick={()=> (isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).mutate()} disabled={(isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).isPending || !fields.title.trim() || !fields.artist.trim()} title={!fields.title.trim()||!fields.artist.trim()?'Enter title and artist first':'Copy prompt to search lyrics via ChatGPT'} className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">{(isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).isPending?'Building…':'✦ Search lyrics'}</button>
-                <button onClick={()=> setFormatOpen(true)} title="Paste raw lyrics and normalize formatting" className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-white hover:bg-zinc-700 transition-colors">{isSplit?'Format lyrics':'Enter lyrics'}</button>
                 <button onClick={()=> (isSplit? transcribeMutationSeg: transcribeMutationDraft).mutate()} disabled={(isSplit? transcribeMutationSeg: transcribeMutationDraft).isPending} className="text-xs px-2.5 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">{(isSplit? transcribeMutationSeg: transcribeMutationDraft).isPending?'Transcribing…':'✦ Whisper'}</button>
-                <button onClick={()=> (isSplit? suggestMutationSeg: suggestMutationDraft).mutate()} disabled={(isSplit? suggestMutationSeg: suggestMutationDraft).isPending || !lyrics.trim()} title={!lyrics.trim()?'Transcribe lyrics first':'Copy prompt for ChatGPT'} className="text-xs px-2.5 py-1 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">{(isSplit? suggestMutationSeg: suggestMutationDraft).isPending?'Building…':'✦ Suggest'}</button>
+                <button onClick={()=> (isSplit? suggestMutationSeg: suggestMutationDraft).mutate()} disabled={(isSplit? suggestMutationSeg: suggestMutationDraft).isPending} title="Copy prompt for ChatGPT" className="text-xs px-2.5 py-1 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">{(isSplit? suggestMutationSeg: suggestMutationDraft).isPending?'Building…':'✦ Suggest'}</button>
+                <button onClick={()=> (isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).mutate()} disabled={(isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).isPending || !fields.title.trim() || !fields.artist.trim()} title={!fields.title.trim()||!fields.artist.trim()?'Use ✦ Suggest first to fill title and artist':'Copy Google search query (title - artist lyrics)'} className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">{(isSplit? lyricsSearchMutationSeg: lyricsSearchMutationDraft).isPending?'Building…':'✦ Search lyrics'}</button>
+                <button onClick={()=> (isSplit? artworkSearchMutationSeg: artworkSearchMutationDraft).mutate()} disabled={(isSplit? artworkSearchMutationSeg: artworkSearchMutationDraft).isPending || !fields.title.trim() || !fields.artist.trim()} title={!fields.title.trim()||!fields.artist.trim()?'Use ✦ Suggest first to fill title and artist':'Copy Google search query (title - artist artwork)'} className="text-xs px-2.5 py-1 rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">{(isSplit? artworkSearchMutationSeg: artworkSearchMutationDraft).isPending?'Building…':'✦ Search artwork'}</button>
+                <button onClick={()=> setFormatOpen(true)} title="Paste raw lyrics and normalize formatting" className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-white hover:bg-zinc-700 transition-colors">{isSplit?'Format lyrics':'Enter lyrics'}</button>
               </div>
             </div>
             <textarea className={`w-full px-3 py-2 rounded-lg border border-zinc-200 text-sm bg-white resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFocusedMode?'min-h-[40vh] lg:min-h-[50vh]':'h-24'}`} value={lyrics} placeholder="No lyrics yet…" onChange={(e)=> setLyrics(e.target.value)} onBlur={(e)=> handleSaveLyrics(e.target.value)}/>

@@ -264,6 +264,16 @@ export async function suggestLyricsFromText(title: string, artist: string, album
   return data.prompt
 }
 
+export async function suggestArtworkFromSegment(segmentId: string): Promise<string> {
+  const { data } = await api.post<{ segment_id: string; prompt: string }>(`/suggest/artwork/${segmentId}`)
+  return data.prompt
+}
+
+export async function suggestArtworkFromText(title: string, artist: string, album?: string): Promise<string> {
+  const { data } = await api.post<{ prompt: string }>(`/suggest/artwork/preview`, { title, artist, album: album ?? '' })
+  return data.prompt
+}
+
 export async function fetchLyricsForSegment(
   segmentId: string,
   artist: string,

@@ -107,7 +107,7 @@ export function SuggestModal({ prompt, onApply, onClose }: Props) {
           <textarea
             ref={textareaRef}
             className="w-full h-32 px-3 py-2 rounded-lg border border-zinc-200 text-xs bg-white resize-none focus:outline-none focus:ring-2 focus:ring-violet-500 font-mono"
-            placeholder={'{"title": "...", "artist": "...", "year": "...", "genre": "...", "lyrics": "..."}\n![Album cover](https://...)'}
+            placeholder={'{"title": "...", "artist": "...", "year": "...", "genre": "..."}\n![Album cover](https://...)'}
             value={json}
             onChange={(e) => setJson(e.target.value)}
           />
