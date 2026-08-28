@@ -15,6 +15,7 @@ interface Props {
   ref?: React.Ref<WaveformHandle>
   focusedIndex?: number | null | undefined
   onWaveStateChange?: ((playing: boolean, reason: import('@/hooks/useWaveSurfer').WaveStateReason) => void) | undefined
+  onReadyChange?: ((ready: boolean) => void) | undefined
   onTogglePlay?: (() => void) | undefined
   onSeekPause?: (() => void) | undefined
 }
@@ -29,6 +30,7 @@ export function Waveform({
   ref,
   focusedIndex,
   onWaveStateChange,
+  onReadyChange,
   onTogglePlay,
   onSeekPause,
 }: Props) {
@@ -43,7 +45,7 @@ export function Waveform({
     cursorMs,
     setCursorMs,
     applyZoom,
-  } = useWaveSurfer({ audioUrl, containerRef, durationMs, ref: ref as React.Ref<import("@/hooks/useWaveSurfer").WaveformHandle>, onStateChange: onWaveStateChange })
+  } = useWaveSurfer({ audioUrl, containerRef, durationMs, ref: ref as React.Ref<import("@/hooks/useWaveSurfer").WaveformHandle>, onStateChange: onWaveStateChange, onReadyChange })
 
   useWaveformRegions({
     wsRef,

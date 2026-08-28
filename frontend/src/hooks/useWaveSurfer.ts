@@ -21,12 +21,14 @@ export function useWaveSurfer({
   durationMs,
   ref,
   onStateChange,
+  onReadyChange,
 }: {
   audioUrl: string
   containerRef: React.RefObject<HTMLDivElement | null>
   durationMs: number
   ref?: React.Ref<WaveformHandle>
   onStateChange?: ((playing: boolean, reason: WaveStateReason) => void) | undefined
+  onReadyChange?: ((ready: boolean) => void) | undefined
 }) {
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
@@ -170,6 +172,14 @@ export function useWaveSurfer({
 
   useEffect(() => {
     if (!containerRef.current) return
+    // Guarantee not out-of-sync: reset to paused/Play on every audio source change (session entry, focus switch)
+    setPlaying(false)
+    setReady(false)
+    onReadyChange?.(false)
+    setCursorMs(null)
+    stopAtRef.current = null
+    pendingPlayRef.current = null
+    onStateChange?.(false, 'stop')
     const regions = RegionsPlugin.create()
     regionsRef.current = regions
     const ws = WaveSurfer.create({
@@ -181,7 +191,6 @@ export function useWaveSurfer({
       plugins: [regions],
     })
     setError(null)
-    setReady(false)
     ws.load(audioUrl).catch((err: unknown) => {
       if (err instanceof Error && err.name === 'AbortError') return
       console.error('[Waveform] load failed', audioUrl, err)
@@ -189,6 +198,7 @@ export function useWaveSurfer({
     })
     ws.on('ready', () => {
       setReady(true)
+      onReadyChange?.(true)
       setError(null)
       if (pendingPlayRef.current) {
         const { startMs, endMs } = pendingPlayRef.current
@@ -254,6 +264,9 @@ export function useWaveSurfer({
     return () => {
       containerEl?.removeEventListener('pointerdown', onPointerDown)
       ws.destroy()
+      setPlaying(false)
+      setReady(false)
+      onReadyChange?.(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl])

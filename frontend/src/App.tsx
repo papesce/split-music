@@ -23,6 +23,15 @@ export default function App() {
   const playingTrackRef = useRef<number | null>(null)
   playingTrackRef.current = playingTrack
   const [exporting, setExporting] = useState(false)
+  const [waveformReady, setWaveformReady] = useState(false)
+
+  const resetPlayback = useCallback(() => {
+    try { waveformRef.current?.pause() } catch {}
+    // useWaveSurfer also emits stop on audioUrl change; clear local truth synchronously
+    pendingPlayRef.current = null
+    setPlayingTrack(null)
+    setWaveformReady(false)
+  }, [])
 
   const handleWaveStateChange = useCallback((playing: boolean, reason: string) => {
     if (!playing) {
@@ -31,6 +40,7 @@ export default function App() {
         setPlayingTrack(null)
       } else if (reason === 'seek') {
         setPlayingTrack(null)
+        pendingPlayRef.current = null
       }
     } else {
       // deferred play succeeded – if we had a pending track play, commit it
@@ -75,19 +85,15 @@ export default function App() {
   const handleEnterFocus = useCallback((idx: number) => {
     // audio source swaps (full file -> focused segment preview/segment audio)
     // – stop any list-bound playback so we don't show a phantom "playing" row
-    waveformRef.current?.pause()
-    pendingPlayRef.current = null
-    setPlayingTrack(null)
+    resetPlayback()
     session.setFocusedIndex(idx)
-  }, [session])
+  }, [session, resetPlayback])
 
   const handleExitFocus = useCallback(() => {
-    waveformRef.current?.pause()
-    pendingPlayRef.current = null
-    setPlayingTrack(null)
+    resetPlayback()
     session.setFocusedIndex(null)
     waveformRef.current?.resetZoom()
-  }, [session])
+  }, [session, resetPlayback])
 
   const handleDeleteTrack = useCallback(
     (index: number, mode: 'mergePrev' | 'mergeNext' | 'discard' = 'mergeNext') => {
@@ -126,19 +132,16 @@ export default function App() {
   )
 
   const splittableCount = session.splitPoints.length > 1 ? session.splitPoints.length - 1 : 0
-  const waveformReady = !!waveformRef.current?.isReady?.()
 
-  // clear playing on stage/file change, focus change, and stale index
-  useEffect(() => { setPlayingTrack(null); pendingPlayRef.current = null }, [session.upload?.file_id, session.stage])
+  // clear playing on stage/file change, focus change, and stale index — guarantees Play (not Pause) when entering a session
+  useEffect(() => { resetPlayback() }, [session.upload?.file_id, session.stage, resetPlayback])
   const prevFocusedRef = useRef<number | null>(null)
   useEffect(() => {
     if (prevFocusedRef.current !== session.focusedIndex) {
-      waveformRef.current?.pause()
-      pendingPlayRef.current = null
-      setPlayingTrack(null)
+      resetPlayback()
       prevFocusedRef.current = session.focusedIndex
     }
-  }, [session.focusedIndex])
+  }, [session.focusedIndex, resetPlayback])
   useEffect(() => {
     if (playingTrack !== null && playingTrack >= splittableCount) { setPlayingTrack(null); pendingPlayRef.current = null }
   }, [splittableCount, playingTrack])
@@ -163,6 +166,21 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [session.focusedIndex, handleExitFocus, handleTogglePlay])
+
+  const handleUploaded = useCallback((result: import('@/types').UploadResponse) => {
+    resetPlayback()
+    session.handleUploaded(result)
+  }, [resetPlayback, session])
+
+  const handleResume = useCallback(async (entry: import('@/types').FileEntry) => {
+    resetPlayback()
+    await session.handleResume(entry)
+  }, [resetPlayback, session])
+
+  const handleReset = useCallback(() => {
+    resetPlayback()
+    session.handleReset()
+  }, [resetPlayback, session])
 
   const handleExportAll = async () => {
     if (!session.upload || session.splitSegments.length === 0) return
@@ -199,7 +217,7 @@ export default function App() {
               <SessionRow
                 key={entry.file_id}
                 entry={entry}
-                onResume={() => session.handleResume(entry)}
+                onResume={() => handleResume(entry)}
                 onDelete={() => session.handleDeleteSession(entry.file_id)}
               />
             ))}
@@ -222,7 +240,7 @@ export default function App() {
           <AppIcon />
           <h1 className="text-lg font-semibold">Split Music</h1>
         </header>
-        <FileUpload onUploaded={session.handleUploaded} />
+        <FileUpload onUploaded={handleUploaded} />
       </div>
     )
   }
@@ -231,10 +249,10 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
       <div className="fixed top-0 inset-x-0 z-40" style={{ height: HEADER_H }}>
-        <AppHeader
+          <AppHeader
           upload={session.upload}
           onArtClick={() => setArtModalOpen(true)}
-          onReset={session.handleReset}
+          onReset={handleReset}
         />
       </div>
 
@@ -274,6 +292,7 @@ export default function App() {
             focusedSegmentId={session.focusedIndex !== null ? (session.splitMap.get(session.focusedIndex) ?? null) : null}
             onExitFocus={handleExitFocus}
             onWaveStateChange={handleWaveStateChange}
+            onReadyChange={setWaveformReady}
             onTogglePlay={handleTogglePlay}
             onSeekPause={handleSeekPause}
           />

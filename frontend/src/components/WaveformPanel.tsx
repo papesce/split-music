@@ -21,6 +21,7 @@ interface Props {
   focusedSegmentId?: string | null
   onExitFocus?: () => void
   onWaveStateChange?: ((playing: boolean, reason: import('@/hooks/useWaveSurfer').WaveStateReason) => void) | undefined
+  onReadyChange?: ((ready: boolean) => void) | undefined
   onTogglePlay?: (() => void) | undefined
   onSeekPause?: (() => void) | undefined
 }
@@ -44,6 +45,7 @@ export function WaveformPanel({
   focusedSegmentId,
   onExitFocus,
   onWaveStateChange,
+  onReadyChange,
   onTogglePlay,
   onSeekPause,
 }: Props) {
@@ -122,6 +124,7 @@ export function WaveformPanel({
             onAddSplit={onAddSplit}
             focusedIndex={focusedIndex}
             onWaveStateChange={onWaveStateChange}
+            onReadyChange={onReadyChange}
             onTogglePlay={onTogglePlay}
             onSeekPause={onSeekPause}
           />
